@@ -41,6 +41,7 @@
         let partner = null;
         let deviceDetailsSent = false;
         let isStreaming = false;
+        let lastFullscreenGestureAt = 0;
 
         const setStatus = (text, isStreaming = false) => {
           status.textContent = text;
@@ -54,7 +55,7 @@
           fullscreenHint.hidden = !isStreaming || Boolean(isFullscreen());
         };
 
-        const requestFullscreenFromFirstTap = () => {
+        const requestFullscreenFromGesture = () => {
           if (isFullscreen()) return;
 
           if (typeof document.documentElement.requestFullscreen === 'function') {
@@ -66,16 +67,21 @@
           }
         };
 
-        const firstTap = () => {
-          document.removeEventListener('pointerup', firstTap);
-          document.removeEventListener('touchend', firstTap);
-          requestFullscreenFromFirstTap();
+        const enterFullscreenOnTap = () => {
+          if (!isStreaming || isFullscreen()) return;
+
+          // Safari emits both pointerup and touchend for one finger gesture.
+          // Let the first event retain user activation, then ignore its twin.
+          const now = Date.now();
+          if (now - lastFullscreenGestureAt < 750) return;
+          lastFullscreenGestureAt = now;
+          requestFullscreenFromGesture();
         };
 
         // Fullscreen requires a real user activation on iPadOS. Keep this outside
         // stream setup so requesting it never recreates the PeerConnection.
-        document.addEventListener('pointerup', firstTap, { once: true });
-        document.addEventListener('touchend', firstTap, { once: true });
+        document.addEventListener('pointerup', enterFullscreenOnTap);
+        document.addEventListener('touchend', enterFullscreenOnTap);
         document.addEventListener('fullscreenchange', updateFullscreenHint);
         document.addEventListener('webkitfullscreenchange', updateFullscreenHint);
 
