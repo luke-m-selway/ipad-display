@@ -11,6 +11,7 @@ VIRTUAL_DISPLAY_SOURCE="$REPO_DIR/scripts/ipad-4x3-display.m"
 HOST_PID_FILE="$STATE_DIR/host.pid"
 DISPLAY_PID_FILE="$STATE_DIR/virtual-display.pid"
 DISPLAY_ID_FILE="$STATE_DIR/virtual-display-id"
+HOST_READY_FILE="$STATE_DIR/host-ready"
 LOG_FILE="$STATE_DIR/ipad.log"
 HOST_ENTRY="$REPO_DIR/out/main/ipad-host.js"
 VIEWER_DIR="$REPO_DIR/out/ipad-viewer"
@@ -26,6 +27,15 @@ log() {
 
 error() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" | tee -a "$LOG_FILE" >&2
+}
+
+startup_complete=true
+
+cleanup_failed_start() {
+  if [ "$startup_complete" = false ]; then
+    error "Startup failed; cleaning up stack-owned processes"
+    stop_stack
+  fi
 }
 
 read_pid_record() {
@@ -96,6 +106,7 @@ stop_stack() {
   terminate_owned_process "$HOST_PID_FILE" "$HOST_ENTRY" "host"
   terminate_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN" "virtual display"
   rm -f "$DISPLAY_ID_FILE"
+  rm -f "$HOST_READY_FILE"
   log "iPad display stack stopped"
 }
 
@@ -204,16 +215,11 @@ start_stack() {
 
   local owner_token
   owner_token="$(uuidgen 2>/dev/null || date '+%s')-$$"
-  local startup_complete=false
-  cleanup_failed_start() {
-    if [ "$startup_complete" = false ]; then
-      error "Startup failed; cleaning up stack-owned processes"
-      stop_stack
-    fi
-  }
+  startup_complete=false
   trap cleanup_failed_start EXIT INT TERM
 
   rm -f "$DISPLAY_ID_FILE"
+  rm -f "$HOST_READY_FILE"
   local existing_display_status=0
   use_existing_virtual_display_if_present || existing_display_status=$?
   if [ "$existing_display_status" = 1 ]; then
@@ -228,13 +234,15 @@ start_stack() {
 
   log "Starting iPad host"
   IPAD_MODE=1 IPAD_BIND_IP="$FIXED_IP" IPAD_FIXED_ROOM_ID="ipad-main" \
-    IPAD_DISPLAY_ID_FILE="$DISPLAY_ID_FILE" \
+    IPAD_DISPLAY_ID_FILE="$DISPLAY_ID_FILE" IPAD_READY_FILE="$HOST_READY_FILE" \
+    IPAD_OWNER_TOKEN="$owner_token" \
     "$electron_bin" "$HOST_ENTRY" --ipad-display-owner "$owner_token" >> "$LOG_FILE" 2>&1 &
   local host_pid=$!
   printf '%s %s\n' "$host_pid" "$owner_token" > "$HOST_PID_FILE"
 
   for _ in $(seq 1 20); do
     if is_owned_process "$HOST_PID_FILE" "$HOST_ENTRY" && \
+      [ -f "$HOST_READY_FILE" ] && grep -Fxq "$owner_token" "$HOST_READY_FILE" && \
       curl --fail --silent --connect-timeout 1 "http://${FIXED_IP}:${FIXED_PORT}/" >/dev/null; then
       startup_complete=true
       trap - EXIT INT TERM

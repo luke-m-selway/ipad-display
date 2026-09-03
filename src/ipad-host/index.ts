@@ -1,5 +1,5 @@
 import { app, desktopCapturer, ipcMain, screen } from 'electron';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import DesktopCapturerSourceType from '../common/DesktopCapturerSourceType';
 import { IpcEvents } from '../common/IpcEvents.enum';
@@ -14,11 +14,13 @@ import type { LocalPeerUser } from '../common/LocalPeerUser';
 const IPAD_BIND_IP = '192.168.2.1';
 const IPAD_PORT = 3131;
 const IPAD_FIXED_ROOM_ID = 'ipad-main';
-const IPAD_DISPLAY_NAME = 'iPad 4:3 Display';
 const IPAD_DISPLAY_WIDTH = 1600;
 const IPAD_DISPLAY_HEIGHT = 1200;
 const displayIDStateFile =
 	process.env.IPAD_DISPLAY_ID_FILE ?? '/tmp/ipad-display/virtual-display-id';
+const readyStateFile =
+	process.env.IPAD_READY_FILE ?? '/tmp/ipad-display/host-ready';
+const ownerToken = process.env.IPAD_OWNER_TOKEN ?? '';
 
 type VirtualDisplaySource = {
 	sourceID: string;
@@ -72,9 +74,10 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 		display.bounds.width !== IPAD_DISPLAY_WIDTH ||
 		display.bounds.height !== IPAD_DISPLAY_HEIGHT
 	) {
-		throw new Error(
-			`Virtual display ${expectedDisplayID} has ${display.bounds.width}x${display.bounds.height}; expected ${IPAD_DISPLAY_WIDTH}x${IPAD_DISPLAY_HEIGHT}`,
+		console.log(
+			`[iPad Host] Virtual display ${expectedDisplayID} is ${display.bounds.width}x${display.bounds.height}; waiting for ${IPAD_DISPLAY_WIDTH}x${IPAD_DISPLAY_HEIGHT}`,
 		);
+		return null;
 	}
 
 	const sources = await desktopCapturer.getSources({
@@ -92,12 +95,6 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 		);
 		return null;
 	}
-	if (source.name !== IPAD_DISPLAY_NAME) {
-		throw new Error(
-			`Virtual display ${expectedDisplayID} is named ${JSON.stringify(source.name)}; expected ${JSON.stringify(IPAD_DISPLAY_NAME)}`,
-		);
-	}
-
 	return {
 		sourceID: source.id,
 		displayID: expectedDisplayID,
@@ -226,6 +223,7 @@ async function startIpadHost(): Promise<void> {
 	}
 	virtualDisplay = await waitForVirtualDisplay();
 	sharingSession = createSharingSession(virtualDisplay);
+	writeFileSync(readyStateFile, ownerToken, 'utf8');
 	console.log(`[iPad Host] Ready at http://${IPAD_BIND_IP}:${IPAD_PORT}/`);
 }
 
