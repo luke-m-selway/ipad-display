@@ -21,6 +21,7 @@ export default class SharingSession {
 	status: SharingSessionStatusEnum;
 	statusChangeListeners: SharingSessionStatusChangeListener[];
 	peerConnectionHelperRenderer: BrowserWindow | undefined;
+	peerConnectionHelperRendererReady: boolean;
 	onDeviceConnectedCallback: undefined | ((device: Device) => void);
 	desktopCapturerSourceID: string;
 
@@ -40,6 +41,7 @@ export default class SharingSession {
 		this.statusChangeListeners = [] as SharingSessionStatusChangeListener[];
 		this.desktopCapturerSourceID = '';
 		this.onDeviceConnectedCallback = undefined;
+		this.peerConnectionHelperRendererReady = false;
 
 		if (process.env.RUN_MODE === 'test') return;
 
@@ -51,6 +53,7 @@ export default class SharingSession {
 			// TODO: OR I can use a Utility or Child process to handle this. https://electron-vite.org/guide/dev#utility-process-and-child-process
 			// TODO: probably using worker thread is the best option, but it will use the same resources as the main thread. child process is using more resources, but it is more isolated.
 			// TODO: https://github.com/alex8088/electron-vite-worker-example
+			this.peerConnectionHelperRendererReady = true;
 			this.peerConnectionHelperRenderer?.webContents.send(
 				'create-peer-connection-with-data',
 				{
@@ -59,6 +62,12 @@ export default class SharingSession {
 					user,
 				},
 			);
+			if (this.desktopCapturerSourceID) {
+				this.peerConnectionHelperRenderer?.webContents.send(
+					'set-desktop-capturer-source-id',
+					this.desktopCapturerSourceID,
+				);
+			}
 		});
 
 		this.peerConnectionHelperRenderer.webContents.on(
@@ -92,6 +101,7 @@ export default class SharingSession {
 	setDesktopCapturerSourceID(id: string): void {
 		this.desktopCapturerSourceID = id;
 		if (process.env.RUN_MODE === 'test') return;
+		if (!this.peerConnectionHelperRendererReady) return;
 		this.peerConnectionHelperRenderer?.webContents.send(
 			'set-desktop-capturer-source-id',
 			id,

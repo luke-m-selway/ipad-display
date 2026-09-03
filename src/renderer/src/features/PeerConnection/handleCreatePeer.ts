@@ -51,14 +51,21 @@ export default function handleCreatePeer(
 				// TODO: basically here we need a client side simple peer, but we get a nodejs side simple peer
 				if (peerConnection.localStream !== null) {
 					peerConnection.peer.addStream(peerConnection.localStream);
-					
-					// Apply degradation preference to maintain resolution
-					peerConnection.applyDegradationPreference();
+					void peerConnection.applyDegradationPreference();
 				}
 
-				peerConnection.peer.on('signal', (data: string) => {
+				peerConnection.peer.on('signal', (data) => {
 					// fired when simple peer and webrtc done preparation to start call on peerConnection machine
 					peerConnection.signalsDataToCallUser.push(data);
+					// The dedicated host may receive DEVICE_DETAILS before Chromium has
+					// generated its first offer. Preserve the normal callPeer contract
+					// while delivering any later trickle signal to the approved viewer.
+					if (peerConnection.isCallStarted) {
+						void peerConnection.sendEncryptedMessage({
+							type: 'CALL_USER',
+							payload: { signalData: data },
+						});
+					}
 				});
 
 				peerConnection.peer.on('data', (data) => {

@@ -2,7 +2,6 @@ import { resolve } from 'path';
 import {
 	defineConfig,
 	externalizeDepsPlugin,
-	bytecodePlugin,
 } from 'electron-vite';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
@@ -66,12 +65,24 @@ const copyIpadViewerStaticFiles = () => {
 		async writeBundle() {
 			const sourceDir = resolve(__dirname, 'src/ipad-viewer');
 			const destDir = resolve(__dirname, 'out/ipad-viewer');
+			const vendorDir = resolve(destDir, 'vendor');
 
 			console.log(`Copying iPad viewer from: ${sourceDir}`);
 
 			try {
 				await fs.emptyDir(destDir);
 				await fs.copy(sourceDir, destDir);
+				await fs.ensureDir(vendorDir);
+				await Promise.all([
+					fs.copyFile(
+						resolve(__dirname, 'node_modules/simple-peer/simplepeer.min.js'),
+						resolve(vendorDir, 'simplepeer.min.js'),
+					),
+					fs.copyFile(
+						resolve(__dirname, 'node_modules/socket.io-client/dist/socket.io.min.js'),
+						resolve(vendorDir, 'socket.io.min.js'),
+					),
+				]);
 				console.log('Successfully copied iPad viewer to out/ipad-viewer');
 			} catch (err) {
 				console.error(`Error copying iPad viewer: ${err}`);

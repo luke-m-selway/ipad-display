@@ -28,6 +28,8 @@ const { hostname, primaryPort, backupPort } = config;
 
 // Check if running in iPad mode
 const isIpadMode = process.env.IPAD_MODE === '1';
+const IPAD_BIND_IP = '192.168.2.1';
+const IPAD_PORT = 3131;
 
 const getRoomIdHash = (id: string): string => {
 	return crypto.createHash('sha256').update(id).digest('hex');
@@ -99,7 +101,7 @@ class DeskreenSignalingServer {
 		this.primaryPort = parseInt(primaryPort as unknown as string, 10);
 		this.backupPort = parseInt(backupPort as unknown as string, 10);
 
-		this.port = this.primaryPort;
+		this.port = isIpadMode ? IPAD_PORT : this.primaryPort;
 		
 		// Use iPad viewer in iPad mode, otherwise use standard client viewer
 		if (isIpadMode) {
@@ -107,8 +109,7 @@ class DeskreenSignalingServer {
 			if (this.clientDistDirectory) {
 				this.log.info('Using iPad viewer bundle');
 			} else {
-				this.log.warn('iPad viewer bundle not found, will try client viewer');
-				this.clientDistDirectory = getClientViewerDistPath();
+				this.log.error('iPad viewer bundle is missing or incomplete');
 			}
 		} else {
 			this.clientDistDirectory = getClientViewerDistPath();
@@ -172,6 +173,9 @@ class DeskreenSignalingServer {
 	}
 
 	async start(): Promise<http.Server> {
+		if (isIpadMode && !this.clientDistDirectory) {
+			throw new Error('iPad viewer bundle is missing or incomplete');
+		}
 		startPollForInactiveRooms();
 		this.server = await this.callListenOnHttpServer();
 		return this.server;
@@ -190,6 +194,14 @@ class DeskreenSignalingServer {
 
 	async callListenOnHttpServer(): Promise<http.Server> {
 		return new Promise<http.Server>((resolve, reject) => {
+			if (
+				isIpadMode &&
+				process.env.IPAD_BIND_IP &&
+				process.env.IPAD_BIND_IP !== IPAD_BIND_IP
+			) {
+				reject(new Error(`iPad mode requires ${IPAD_BIND_IP}, not ${process.env.IPAD_BIND_IP}`));
+				return;
+			}
 			const tryListen = (port: number, bindHost: string): void => {
 				// Remove any previous error listeners
 				this.server.removeAllListeners('error');
@@ -253,7 +265,7 @@ class DeskreenSignalingServer {
 			};
 
 			// In iPad mode, bind to the specific IP; otherwise bind to all interfaces
-			const bindHost = isIpadMode ? (process.env.IPAD_BIND_IP || '192.168.2.1') : '0.0.0.0';
+			const bindHost = isIpadMode ? IPAD_BIND_IP : '0.0.0.0';
 			
 			if (isIpadMode) {
 				this.log.info(`iPad mode: binding to fixed address ${bindHost}:${this.port}`);

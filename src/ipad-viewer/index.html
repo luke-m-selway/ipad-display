@@ -1,273 +1,121 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>iPad Display</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body {
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background: #000;
-        }
-        #video-container {
-            width: 100%;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        video {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-        #loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: #666;
-            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-            font-size: 16px;
-        }
-        #status {
-            position: absolute;
-            bottom: 10px;
-            left: 10px;
-            color: #666;
-            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-            font-size: 12px;
-        }
-        .hidden { display: none !important; }
+      html, body, video { width: 100%; height: 100%; margin: 0; background: #000; }
+      video { display: block; object-fit: contain; }
+      #status { position: fixed; inset: auto 12px 12px; color: #777; font: 12px -apple-system, sans-serif; }
+      #status[hidden] { display: none; }
     </style>
-</head>
-<body>
-    <div id="video-container">
-        <div id="loading">Connecting...</div>
-        <video id="video" autoplay muted playsinline></video>
-    </div>
-    <div id="status"></div>
-
-    <!-- Use Socket.IO client from CDN since server has serveClient: false -->
-    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    
-    <script type="module">
+  </head>
+  <body>
+    <video id="video" autoplay muted playsinline></video>
+    <div id="status">Connecting…</div>
+    <script src="/vendor/socket.io.min.js"></script>
+    <script src="/vendor/simplepeer.min.js"></script>
+    <script>
+      (() => {
         const ROOM_ID = 'ipad-main';
-        
-        let peerConnection = null;
-        let socket = null;
-        let hasReceivedStream = false;
-        let isAllowed = true;
-        
-        const videoEl = document.getElementById('video');
-        const loadingEl = document.getElementById('loading');
-        const statusEl = document.getElementById('status');
-        
-        function updateStatus(msg) {
-            statusEl.textContent = msg;
-            console.log('[iPad Viewer]', msg);
-        }
-        
-        // WebRTC Configuration - local-only, no STUN for USB link
-        const rtcConfig = {
-            iceServers: []  // Local connection only
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        const SimplePeer = window['SimplePeer'];
+        const connectSocket = window['io'];
+        const user = {
+          id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+          username: `ipad-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         };
-        
-        function getPeerConnection() {
-            const pc = new RTCPeerConnection(rtcConfig);
-            
-            // Apply degradation preference to maintain resolution if supported
-            try {
-                const senders = pc.getSenders();
-                if (senders.length > 0) {
-                    const videoSender = senders.find(s => s.track?.kind === 'video');
-                    if (videoSender && videoSender.parameters) {
-                        const params = videoSender.parameters;
-                        if (!params.degradationPreference || params.degradationPreference === 'balanced') {
-                            // Feature detection: only set if we can
-                            Object.defineProperty(params, 'degradationPreference', {
-                                value: 'maintain-resolution',
-                                writable: false
-                            });
-                        }
-                    }
-                }
-            } catch (e) {
-                console.log('Degradation preference not supported');
-            }
-            
-            return pc;
+
+        let partner = null;
+        let deviceDetailsSent = false;
+
+        const setStatus = (text, isStreaming = false) => {
+          status.textContent = text;
+          status.hidden = isStreaming;
+        };
+
+        // This is the stock Deskreen viewer contract: a non-initiating
+        // simple-peer receives CALL_USER signals and returns CALL_ACCEPTED signals.
+        if (!SimplePeer || !connectSocket) {
+          setStatus('Viewer assets failed to load');
+          return;
         }
-        
-        function handleSignal(data) {
-            console.log('[iPad Viewer] Signal received:', data.type);
-            if (!peerConnection) return;
-            
-            if (data.type === 'signal') {
-                // Direct signal from host
-                try {
-                    peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp || data));
-                } catch (e) {
-                    console.error('Error setting remote description:', e);
-                }
-            }
-        }
-        
-        function sendEncryptedMessage(type, payload) {
-            if (!socket || !socket.connected) return;
-            
-            // Simplified signaling - send raw message structure
-            // The host expects a specific format matching Deskreen's protocol
-            socket.emit('MESSAGE', {
-                type: type,
-                payload: payload,
-                // Add required fields for the host's processMessage
+        const peer = new SimplePeer({ initiator: false, config: { iceServers: [] } });
+        const socket = connectSocket(window.location.origin, {
+          query: { roomId: ROOM_ID },
+          forceNew: true,
+        });
+
+        const sendMessage = (type, payload) => {
+          if (!partner) return;
+          socket.emit('MESSAGE', {
+            type,
+            payload: { ...payload, sender: user.id, username: user.username },
+          });
+        };
+
+        peer.on('signal', (signalData) => {
+          sendMessage('CALL_ACCEPTED', { signalData });
+        });
+
+        peer.on('stream', (stream) => {
+          video.srcObject = stream;
+          void video.play().catch(() => {
+            console.debug('[iPad Viewer] Safari deferred autoplay');
+          });
+          setStatus('Streaming', true);
+        });
+
+        peer.on('error', (error) => {
+          console.error('[iPad Viewer] simple-peer error', error);
+          setStatus('WebRTC connection failed');
+        });
+
+        socket.on('connect', () => {
+          setStatus('Joining display…');
+          // Darkwire installs its room handlers shortly after Socket.IO connects.
+          // Match the stock viewer's GET_MY_IP -> USER_ENTER ordering.
+          window.setTimeout(() => {
+            socket.emit('GET_MY_IP', () => {
+              socket.emit('USER_ENTER', { username: user.username, ip: '' });
             });
-        }
-        
-        function setupPeerConnection() {
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    console.log('[iPad Viewer] ICE candidate');
-                    // Candidates are sent via the signaling channel
-                }
-            };
-            
-            peerConnection.ontrack = (event) => {
-                console.log('[iPad Viewer] Track received');
-                if (!hasReceivedStream && event.streams && event.streams[0]) {
-                    hasReceivedStream = true;
-                    loadingEl.classList.add('hidden');
-                    videoEl.srcObject = event.streams[0];
-                    updateStatus('Streaming');
-                }
-            };
-            
-            peerConnection.oniceconnectionstatechange = () => {
-                updateStatus('Connection: ' + peerConnection.iceConnectionState);
-                if (peerConnection.iceConnectionState === 'connected') {
-                    loadingEl.classList.add('hidden');
-                }
-            };
-        }
-        
-        function connect() {
-            updateStatus('Connecting to server...');
-            
-            // Connect to the signaling server
-            const serverUrl = window.location.origin;
-            socket = io(serverUrl, {
-                query: { roomId: ROOM_ID },
-                transports: ['websocket', 'polling']
-            });
-            
-            socket.on('connect', () => {
-                updateStatus('Connected, joining room...');
-                console.log('[iPad Viewer] Socket connected, sending USER_ENTER');
-                
-                // Send USER_ENTER to join the room
-                socket.emit('USER_ENTER', {
-                    username: 'iPad-Viewer-' + Date.now()
-                });
-            });
-            
-            socket.on('USER_ENTER', (data) => {
-                console.log('[iPad Viewer] USER_ENTER received:', data);
-                updateStatus('Room joined, receiving stream...');
-                
-                // Start receiving - the host will send CALL_USER with signals
-            });
-            
-            socket.on('NOT_ALLOWED', () => {
-                updateStatus('Not allowed to join');
-                loadingEl.textContent = 'Connection not allowed';
-                isAllowed = false;
-            });
-            
-            socket.on('MESSAGE', (payload) => {
-                console.log('[iPad Viewer] MESSAGE received:', payload);
-                
-                if (!isAllowed) return;
-                
-                // Handle CALL_USER - contains the offer signal from host
-                if (payload.type === 'CALL_USER') {
-                    console.log('[iPad Viewer] Received CALL_USER signal');
-                    
-                    // Create peer connection if not exists
-                    if (!peerConnection) {
-                        peerConnection = getPeerConnection();
-                        setupPeerConnection();
-                    }
-                    
-                    // Apply the signal from the host
-                    const signalData = payload.payload?.signalData;
-                    if (signalData) {
-                        try {
-                            peerConnection.setRemoteDescription(new RTCSessionDescription(signalData))
-                                .then(() => {
-                                    // Create and send answer
-                                    return peerConnection.createAnswer();
-                                })
-                                .then(answer => {
-                                    return peerConnection.setLocalDescription(answer);
-                                })
-                                .then(() => {
-                                    // Send the answer back to host
-                                    socket.emit('MESSAGE', {
-                                        type: 'CALL_ACCEPTED',
-                                        payload: {
-                                            signalData: peerConnection.localDescription
-                                        }
-                                    });
-                                    console.log('[iPad Viewer] Sent CALL_ACCEPTED');
-                                })
-                                .catch(err => {
-                                    console.error('[iPad Viewer] Error handling signal:', err);
-                                });
-                        } catch (e) {
-                            console.error('[iPad Viewer] Signal error:', e);
-                        }
-                    }
-                }
-                
-                // Handle ALLOWED_TO_CONNECT - host approved
-                if (payload.type === 'ALLOWED_TO_CONNECT') {
-                    console.log('[iPad Viewer] Host approved connection');
-                }
-                
-                // Handle DENY_TO_CONNECT
-                if (payload.type === 'DENY_TO_CONNECT') {
-                    updateStatus('Connection denied by host');
-                    loadingEl.textContent = 'Connection denied';
-                }
-                
-                // Handle DISCONNECT_BY_HOST
-                if (payload.type === 'DISCONNECT_BY_HOST_MACHINE_USER') {
-                    updateStatus('Disconnected by host');
-                    if (peerConnection) {
-                        peerConnection.close();
-                        peerConnection = null;
-                    }
-                }
-            });
-            
-            socket.on('disconnect', () => {
-                updateStatus('Disconnected');
-            });
-            
-            socket.on('connect_error', (err) => {
-                updateStatus('Connection error: ' + err.message);
-                loadingEl.textContent = 'Connection failed';
-            });
-        }
-        
-        // Auto-connect on load
-        connect();
+          }, 500);
+        });
+
+        socket.on('USER_ENTER', ({ users }) => {
+          const host = users.find((candidate) => candidate.username !== user.username);
+          if (!host || deviceDetailsSent) return;
+
+          partner = host;
+          deviceDetailsSent = true;
+          sendMessage('DEVICE_DETAILS', {
+            os: 'iPadOS',
+            deviceType: 'tablet',
+            browser: navigator.userAgent,
+            deviceScreenWidth: window.screen.width,
+            deviceScreenHeight: window.screen.height,
+          });
+          setStatus('Waiting for host…');
+        });
+
+        socket.on('MESSAGE', (message) => {
+          if (!message || !message.type) return;
+          if (message.type === 'CALL_USER') {
+            peer.signal(message.payload.signalData);
+          } else if (message.type === 'ALLOWED_TO_CONNECT') {
+            setStatus('Starting stream…');
+          } else if (message.type === 'DENY_TO_CONNECT' || message.type === 'DISCONNECT_BY_HOST_MACHINE_USER') {
+            setStatus('Connection closed');
+          }
+        });
+
+        socket.on('NOT_ALLOWED', () => setStatus('Display unavailable'));
+        socket.on('disconnect', () => setStatus('Disconnected'));
+      })();
     </script>
-</body>
+  </body>
 </html>

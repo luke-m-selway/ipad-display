@@ -29,8 +29,9 @@ export default class RendererWebrtcHelpersService {
 	createPeerConnectionHelperRenderer(): BrowserWindow {
 		let helperRendererWindow: BrowserWindow | null = null;
 
-		helperRendererWindow = new BrowserWindow({
-			show: is.dev, // show in dev only
+			helperRendererWindow = new BrowserWindow({
+			show: is.dev && process.env.IPAD_MODE !== '1',
+			skipTaskbar: process.env.IPAD_MODE === '1',
 			webPreferences: {
 				preload: this.resolvePreloadScriptPath('helperRenderer'),
 				// contextIsolation: true,

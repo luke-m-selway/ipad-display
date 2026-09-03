@@ -94,7 +94,7 @@
     "@vercel/blob": "^2.0.0",
     "@vitejs/plugin-react": "5.1.1",
     "concurrently": "^9.2.1",
-    "electron": "^37.10.3",
+    "electron": "^37.9.0",
     "electron-builder": "^26.7.0",
     "electron-vite": "^4.0.1",
     "react": "^19.2.0",

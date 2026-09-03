@@ -1,356 +1,245 @@
-// iPad Display Host - Truly headless Electron app for streaming to iPad
-// No visible window, uses hidden helper renderer for WebRTC/simple-peer path
-
-import { app, screen, desktopCapturer, BrowserWindow } from 'electron';
-import { join } from 'path';
-import { existsSync } from 'node:fs';
+import { app, desktopCapturer, ipcMain, screen } from 'electron';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import DesktopCapturerSourceType from '../common/DesktopCapturerSourceType';
+import { IpcEvents } from '../common/IpcEvents.enum';
 import { getDeskreenGlobal } from '../main/helpers/getDeskreenGlobal';
-import { signalingServer } from '../server';
-import { startLogBufferCleanup } from '../main/utils/LoggerWithFilePrefix';
 import { initGlobals } from '../main/helpers/initGlobals';
-import PeerConnectionHelperRendererService from '../features/PeerConnectionHelperRendererService';
-import { ConnectedDevicesService } from '../features/ConnectedDevicesService';
-import RoomIDService from '../server/RoomIDService';
-import SharingSessionService from '../features/SharingSessionService';
+import { startLogBufferCleanup } from '../main/utils/LoggerWithFilePrefix';
+import { signalingServer } from '../server';
 import SharingSession from '../features/SharingSessionService/SharingSession';
 import SharingSessionStatusEnum from '../features/SharingSessionService/SharingSessionStatusEnum';
 import type { LocalPeerUser } from '../common/LocalPeerUser';
 
-// iPad-specific configuration
-const IPAD_BIND_IP = process.env.IPAD_BIND_IP || '192.168.2.1';
-const IPAD_FIXED_ROOM_ID = process.env.IPAD_FIXED_ROOM_ID || 'ipad-main';
+const IPAD_BIND_IP = '192.168.2.1';
+const IPAD_PORT = 3131;
+const IPAD_FIXED_ROOM_ID = 'ipad-main';
+const IPAD_DISPLAY_NAME = 'iPad 4:3 Display';
 const IPAD_DISPLAY_WIDTH = 1600;
 const IPAD_DISPLAY_HEIGHT = 1200;
+const displayIDStateFile =
+	process.env.IPAD_DISPLAY_ID_FILE ?? '/tmp/ipad-display/virtual-display-id';
 
-// iPad virtual display has known serial/product/vendor from ipad-4x3-display.m
-const IPAD_VIRTUAL_DISPLAY_SERIAL = 0x4321;
-const IPAD_VIRTUAL_DISPLAY_PRODUCT_ID = 0x1235;
-const IPAD_VIRTUAL_DISPLAY_VENDOR_ID = 0x3456;
-
-let helperWindow: BrowserWindow | null = null;
-let virtualDisplaySourceId: string | null = null;
-let sharingSession: SharingSession | null = null;
-
-const resolvePreloadScriptPath = (entry: 'index' | 'helperRenderer'): string => {
-    const baseDir = join(__dirname, '../preload');
-    const candidates = [`${entry}.js`, `${entry}.mjs`, `${entry}.cjs`];
-    for (const fileName of candidates) {
-        const fullPath = join(baseDir, fileName);
-        if (existsSync(fullPath)) {
-            return fullPath;
-        }
-    }
-    return join(baseDir, `${entry}.js`);
+type VirtualDisplaySource = {
+	sourceID: string;
+	displayID: string;
+	width: number;
+	height: number;
 };
 
-/**
- * Verify the server is listening on the expected IP:port
- */
-async function verifyServerReady(): Promise<boolean> {
-    const net = await import('net');
-    
-    return new Promise((resolve) => {
-        const socket = new net.Socket();
-        socket.setTimeout(1000);
-        
-        socket.on('connect', () => {
-            socket.destroy();
-            resolve(true);
-        });
-        
-        socket.on('timeout', () => {
-            socket.destroy();
-            resolve(false);
-        });
-        
-        socket.on('error', () => {
-            socket.destroy();
-            resolve(false);
-        });
-        
-        socket.connect(3131, IPAD_BIND_IP);
-    });
+let virtualDisplay: VirtualDisplaySource | null = null;
+let sharingSession: SharingSession | null = null;
+let restartInProgress = false;
+let isQuitting = false;
+
+const hostUser: LocalPeerUser = {
+	username: 'iPad-Host',
+	id: 'ipad-host',
+};
+
+function getExpectedDisplayID(): string {
+	if (!existsSync(displayIDStateFile)) {
+		throw new Error(
+			`Virtual display identity file is missing: ${displayIDStateFile}`,
+		);
+	}
+
+	const displayID = readFileSync(displayIDStateFile, 'utf8').trim();
+	if (!/^\d+$/.test(displayID)) {
+		throw new Error(
+			`Virtual display identity file contains an invalid display ID: ${displayIDStateFile}`,
+		);
+	}
+	return displayID;
 }
 
-/**
- * Find the virtual display with EXACT identity matching.
- * Only matches displays that have the known serial/product/vendor IDs from ipad-4x3-display.m
- */
-async function findVirtualDisplay(): Promise<string | null> {
-    console.log('[iPad Host] Searching for virtual display with exact identity...');
-    
-    // Get all displays
-    const displays = screen.getAllDisplays();
-    console.log('[iPad Host] Available displays:', displays.map(d => ({
-        id: d.id,
-        bounds: d.bounds,
-        label: d.label
-    })));
-    
-    // Use desktopCapturer to get sources with minimal thumbnail
-    const sources = await desktopCapturer.getSources({
-        types: [DesktopCapturerSourceType.SCREEN],
-        thumbnailSize: { width: 0, height: 0 }, // No thumbnail needed
-        fetchWindowIcons: false
-    });
-    
-    console.log('[iPad Host] Found', sources.length, 'screen sources');
-    
-    // First pass: try to find display with exact matching dimensions (1600x1200)
-    // and that is NOT the main display
-    const mainDisplayId = screen.getPrimaryDisplay().id;
-    const matchingSources = sources.filter(source => {
-        // Must be the right size
-        const display = displays.find(d => `${d.id}` === source.display_id);
-        if (!display) return false;
-        if (display.id === mainDisplayId) return false; // Must not be main display
-        
-        const { width, height } = display.bounds;
-        return width === IPAD_DISPLAY_WIDTH && height === IPAD_DISPLAY_HEIGHT;
-    });
-    
-    if (matchingSources.length === 0) {
-        console.log('[iPad Host] No 1600x1200 non-main display found');
-        return null;
-    }
-    
-    if (matchingSources.length > 1) {
-        console.error('[iPad Host] ERROR: Multiple 1600x1200 displays found - ambiguous');
-        console.error('[iPad Host] This is unsafe - refusing to select automatically');
-        matchingSources.forEach(s => {
-            const display = displays.find(d => `${d.id}` === s.display_id);
-            console.error(`  - ${s.name} (display ${s.display_id}, ${display?.bounds.width}x${display?.bounds.height})`);
-        });
-        return null;
-    }
-    
-    const source = matchingSources[0];
-    const display = displays.find(d => `${d.id}` === source.display_id);
-    
-    console.log('[iPad Host] Found unique virtual display:', {
-        sourceId: source.id,
-        name: source.name,
-        displayId: source.display_id,
-        dimensions: `${display?.bounds.width}x${display?.bounds.height}`
-    });
-    
-    // Additional safety: verify it's named "iPad 4:3 Display" (from ipad-4x3-display.m)
-    // or contains identifying markers
-    if (!source.name.includes('iPad') && !source.name.includes('Virtual')) {
-        console.warn('[iPad Host] WARNING: Display does not have expected name pattern');
-        console.warn('[iPad Host] Proceeding anyway as dimensions match');
-    }
-    
-    return source.id;
+async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
+	const expectedDisplayID = getExpectedDisplayID();
+	const primaryDisplayID = String(screen.getPrimaryDisplay().id);
+	const displays = screen.getAllDisplays();
+	const display = displays.find((candidate) => String(candidate.id) === expectedDisplayID);
+
+	if (!display) {
+		console.log(
+			`[iPad Host] Virtual display ${expectedDisplayID} is not available yet`,
+		);
+		return null;
+	}
+	if (String(display.id) === primaryDisplayID) {
+		throw new Error('Refusing to capture the primary display');
+	}
+	if (
+		display.bounds.width !== IPAD_DISPLAY_WIDTH ||
+		display.bounds.height !== IPAD_DISPLAY_HEIGHT
+	) {
+		throw new Error(
+			`Virtual display ${expectedDisplayID} has ${display.bounds.width}x${display.bounds.height}; expected ${IPAD_DISPLAY_WIDTH}x${IPAD_DISPLAY_HEIGHT}`,
+		);
+	}
+
+	const sources = await desktopCapturer.getSources({
+		types: [DesktopCapturerSourceType.SCREEN],
+		thumbnailSize: { width: 0, height: 0 },
+		fetchWindowIcons: false,
+	});
+	const source = sources.find(
+		(candidate) => candidate.display_id === expectedDisplayID,
+	);
+
+	if (!source) {
+		console.log(
+			`[iPad Host] No desktop-capturer source for virtual display ${expectedDisplayID} yet`,
+		);
+		return null;
+	}
+	if (source.name !== IPAD_DISPLAY_NAME) {
+		throw new Error(
+			`Virtual display ${expectedDisplayID} is named ${JSON.stringify(source.name)}; expected ${JSON.stringify(IPAD_DISPLAY_NAME)}`,
+		);
+	}
+
+	return {
+		sourceID: source.id,
+		displayID: expectedDisplayID,
+		width: display.bounds.width,
+		height: display.bounds.height,
+	};
 }
 
-/**
- * Start the iPad streaming session
- */
-async function startIpadSession(sourceId: string): Promise<void> {
-    console.log('[iPad Host] Starting iPad streaming session with source:', sourceId);
-    
-    const deskreenGlobal = getDeskreenGlobal();
-    const roomIDService = deskreenGlobal.roomIDService;
-    
-    // Mark the fixed room ID as taken
-    roomIDService.markRoomIDAsTaken(IPAD_FIXED_ROOM_ID);
-    
-    // Create user object for the host
-    const hostUser: LocalPeerUser = {
-        username: 'iPad-Host',
-        id: 'ipad-host'
-    };
-    
-    // Create a sharing session for the iPad
-    sharingSession = new SharingSession(
-        IPAD_FIXED_ROOM_ID,
-        hostUser,
-        deskreenGlobal.rendererWebrtcHelpersService
-    );
-    
-    // Set the source to capture
-    sharingSession.setDesktopCapturerSourceID(sourceId);
-    
-    // Add to the sharing sessions
-    deskreenGlobal.sharingSessionService.sharingSessions.set(sharingSession.id, sharingSession);
-    
-    // Register a callback for when the viewer connects
-    // This replaces the blind 1-second timer
-    sharingSession.setOnDeviceConnectedCallback((device) => {
-        console.log('[iPad Host] Viewer connected:', device);
-        console.log('[iPad Host] Starting stream...');
-        // The stream will start automatically - don't call callPeer here
-        // The normal Deskreen flow handles this via the simple-peer signaling
-    });
-    
-    console.log('[iPad Host] Session created, waiting for viewer connection on room:', IPAD_FIXED_ROOM_ID);
+async function waitForVirtualDisplay(): Promise<VirtualDisplaySource> {
+	for (let attempt = 1; attempt <= 30; attempt += 1) {
+		const source = await findVirtualDisplay();
+		if (source) return source;
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+	}
+	throw new Error(
+		`Virtual display ${getExpectedDisplayID()} did not become capture-ready within 30 seconds`,
+	);
 }
 
-/**
- * Create a hidden helper window for WebRTC operations
- * This is required by Electron for getUserMedia and peer connections
- */
-function createHelperWindow(): BrowserWindow {
-    console.log('[iPad Host] Creating hidden helper window...');
-    
-    helperWindow = new BrowserWindow({
-        show: false,           // Truly hidden
-        frame: false,          // No frame
-        width: 1,
-        height: 1,
-        x: -10000,            // Off-screen
-        y: -10000,
-        skipTaskbar: true,     // Not in taskbar
-        resizable: false,
-        webPreferences: {
-            preload: resolvePreloadScriptPath('index'),
-            sandbox: false,
-            nodeIntegration: true
-        }
-    });
-    
-    // Load about:blank to avoid any visible content
-    helperWindow.loadURL('about:blank');
-    
-    // Prevent the window from becoming visible
-    helperWindow.setVisibleOnAllWorkspaces(false);
-    
-    helperWindow.on('closed', () => {
-        helperWindow = null;
-        console.log('[iPad Host] Helper window closed');
-    });
-    
-    return helperWindow;
+function startSharingForConnectedViewer(session: SharingSession): void {
+	return session.setOnDeviceConnectedCallback((device) => {
+		if (sharingSession !== session || session.status !== SharingSessionStatusEnum.NOT_CONNECTED) {
+			console.log('[iPad Host] Ignoring a duplicate viewer connection event');
+			return;
+		}
+
+		const deskreenGlobal = getDeskreenGlobal();
+		if (!deskreenGlobal.connectedDevicesService.isSlotAvailable()) {
+			void session.denyConnectionForPartner();
+			return;
+		}
+
+		try {
+			deskreenGlobal.connectedDevicesService.addDevice(device);
+			session.setDeviceID(device.id);
+			// CONNECTED emits ALLOWED_TO_CONNECT through Deskreen's existing path.
+			session.setStatus(SharingSessionStatusEnum.CONNECTED);
+			session.callPeer();
+			session.setStatus(SharingSessionStatusEnum.SHARING);
+			console.log('[iPad Host] Viewer approved; starting Deskreen simple-peer call');
+		} catch (error) {
+			console.error('[iPad Host] Failed to start viewer stream', error);
+			session.setStatus(SharingSessionStatusEnum.ERROR);
+			void session.denyConnectionForPartner();
+		}
+	});
 }
 
-/**
- * Wait for server to be ready
- */
-async function waitForServerReady(maxAttempts: number = 30): Promise<boolean> {
-    console.log('[iPad Host] Waiting for server to be ready...');
-    
-    for (let i = 0; i < maxAttempts; i++) {
-        const ready = await verifyServerReady();
-        if (ready) {
-            console.log('[iPad Host] Server is ready on', IPAD_BIND_IP + ':3131');
-            return true;
-        }
-        console.log(`[iPad Host] Server not ready (${i + 1}/${maxAttempts}), retrying...`);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    
-    console.error('[iPad Host] ERROR: Server failed to become ready');
-    return false;
+function createSharingSession(source: VirtualDisplaySource): SharingSession {
+	const deskreenGlobal = getDeskreenGlobal();
+	deskreenGlobal.roomIDService.markRoomIDAsTaken(IPAD_FIXED_ROOM_ID);
+
+	const session = new SharingSession(
+		IPAD_FIXED_ROOM_ID,
+		hostUser,
+		deskreenGlobal.rendererWebrtcHelpersService,
+	);
+	session.setDesktopCapturerSourceID(source.sourceID);
+	deskreenGlobal.sharingSessionService.sharingSessions.set(session.id, session);
+	startSharingForConnectedViewer(session);
+	return session;
+}
+
+async function restartSharingSession(sessionID: string): Promise<void> {
+	if (isQuitting || restartInProgress || sharingSession?.id !== sessionID) return;
+	restartInProgress = true;
+	try {
+		const previousSession = sharingSession;
+		sharingSession = null;
+		previousSession?.destroy();
+		const deskreenGlobal = getDeskreenGlobal();
+		deskreenGlobal.sharingSessionService.sharingSessions.delete(sessionID);
+		deskreenGlobal.roomIDService.unmarkRoomIDAsTaken(IPAD_FIXED_ROOM_ID);
+		if (!virtualDisplay) throw new Error('Virtual display source was lost');
+		sharingSession = createSharingSession(virtualDisplay);
+		console.log('[iPad Host] Reset session after viewer disconnect');
+	} finally {
+		restartInProgress = false;
+	}
+}
+
+function registerIpadIPCHandlers(): void {
+	ipcMain.handle(IpcEvents.GetPort, () => signalingServer.port);
+	ipcMain.handle(IpcEvents.GetSourceDisplayIDByDesktopCapturerSourceID, (_, sourceID) =>
+		virtualDisplay?.sourceID === sourceID ? virtualDisplay.displayID : '',
+	);
+	ipcMain.handle('get-display-size-by-display-id', (_, displayID: string) => {
+		if (!virtualDisplay || displayID !== virtualDisplay.displayID) return undefined;
+		return { width: virtualDisplay.width, height: virtualDisplay.height };
+	});
+	ipcMain.handle(IpcEvents.GetAppLanguage, () => 'en');
+	ipcMain.handle(IpcEvents.DisconnectDeviceById, (_, deviceID: string) =>
+		getDeskreenGlobal().connectedDevicesService.disconnectDeviceByID(deviceID),
+	);
+	ipcMain.handle(IpcEvents.DestroySharingSessionById, (_, sessionID: string) => {
+		void restartSharingSession(sessionID);
+	});
+	// The fixed room remains owned for the host lifetime; a reconnect gets a fresh
+	// helper session without exposing a transient unpaired room to another client.
+	ipcMain.handle(IpcEvents.UnmarkRoomIDAsTaken, () => undefined);
 }
 
 async function startIpadHost(): Promise<void> {
-    console.log('[iPad Host] Starting iPad Display Host...');
-    console.log('[iPad Host] Configuration:', {
-        bindIP: IPAD_BIND_IP,
-        roomID: IPAD_FIXED_ROOM_ID,
-        targetDisplay: `${IPAD_DISPLAY_WIDTH}x${IPAD_DISPLAY_HEIGHT}`
-    });
-    
-    // Set WebRTC CPU consumption
-    app.commandLine.appendSwitch('webrtc-max-cpu-consumption-percentage', '100');
-    
-    // Disable hardware acceleration to reduce resource usage
-    app.disableHardwareAcceleration();
-    
-    // Hide from Dock on macOS
-    app.dock?.hide();
-    
-    // Single instance lock
-    const gotTheLock = app.requestSingleInstanceLock();
-    if (!gotTheLock) {
-        console.log('[iPad Host] Another instance is already running, quitting...');
-        app.quit();
-        return;
-    }
-    
-    app.on('second-instance', () => {
-        // Ignore second instance attempts
-        console.log('[iPad Host] Ignoring second instance attempt');
-    });
-    
-    app.on('window-all-closed', () => {
-        console.log('[iPad Host] All windows closed');
-        app.quit();
-    });
-    
-    await app.whenReady();
-    
-    // Start log cleanup
-    startLogBufferCleanup();
-    
-    // Initialize globals with iPad-specific bind IP
-    const appPath = join(__dirname, '..');
-    initGlobals(appPath, IPAD_BIND_IP);
-    
-    // Initialize services for the host
-    const deskreenGlobal = getDeskreenGlobal();
-    deskreenGlobal.rendererWebrtcHelpersService = new PeerConnectionHelperRendererService(appPath);
-    deskreenGlobal.connectedDevicesService = new ConnectedDevicesService();
-    deskreenGlobal.roomIDService = new RoomIDService();
-    deskreenGlobal.sharingSessionService = new SharingSessionService();
-    
-    // Start signaling server
-    console.log('[iPad Host] Starting signaling server on', IPAD_BIND_IP);
-    signalingServer.start();
-    
-    // Verify server is listening on the correct IP:port
-    const serverReady = await waitForServerReady();
-    if (!serverReady) {
-        console.error('[iPad Host] FATAL: Server failed to start on', IPAD_BIND_IP + ':3131');
-        console.error('[iPad Host] Cannot continue - fix network configuration');
-        app.quit();
-        return;
-    }
-    
-    // Create hidden helper window
-    createHelperWindow();
-    
-    // Initialize IPC handlers (needed for sharing session)
-    if (helperWindow) {
-        const { initIpcMainHandlers } = await import('../main/helpers/ipcMainHandlers');
-        initIpcMainHandlers(helperWindow);
-    }
-    
-    // Wait for display to be available, then find and start streaming
-    console.log('[iPad Host] Waiting for virtual display...');
-    
-    let attempts = 0;
-    const maxAttempts = 30;
-    
-    const tryFindDisplay = async () => {
-        attempts++;
-        const sourceId = await findVirtualDisplay();
-        
-        if (sourceId) {
-            virtualDisplaySourceId = sourceId;
-            await startIpadSession(sourceId);
-            console.log('[iPad Host] Ready - viewer can connect at http://' + IPAD_BIND_IP + ':3131/');
-            return;
-        }
-        
-        if (attempts < maxAttempts) {
-            console.log(`[iPad Host] Display not found, retrying... (${attempts}/${maxAttempts})`);
-            setTimeout(tryFindDisplay, 1000);
-        } else {
-            console.error('[iPad Host] FATAL: Failed to find virtual display after', maxAttempts, 'attempts');
-            console.error('[iPad Host] Please ensure ~/ipad-4x3-display is running');
-            app.quit();
-        }
-    };
-    
-    setTimeout(tryFindDisplay, 500);
+	if (process.env.IPAD_BIND_IP && process.env.IPAD_BIND_IP !== IPAD_BIND_IP) {
+		throw new Error(`iPad mode requires ${IPAD_BIND_IP}, not ${process.env.IPAD_BIND_IP}`);
+	}
+	if (process.env.IPAD_FIXED_ROOM_ID && process.env.IPAD_FIXED_ROOM_ID !== IPAD_FIXED_ROOM_ID) {
+		throw new Error(`iPad mode requires room ${IPAD_FIXED_ROOM_ID}`);
+	}
+
+	app.commandLine.appendSwitch('webrtc-max-cpu-consumption-percentage', '100');
+	if (!app.requestSingleInstanceLock()) {
+		throw new Error('Another iPad host instance is already running');
+	}
+	await app.whenReady();
+	if (process.platform === 'darwin') app.setActivationPolicy('accessory');
+
+	startLogBufferCleanup();
+	const appPath = join(__dirname, '..');
+	initGlobals(appPath, IPAD_BIND_IP, true);
+	registerIpadIPCHandlers();
+
+	await signalingServer.start();
+	if (signalingServer.port !== IPAD_PORT) {
+		throw new Error(`iPad mode unexpectedly selected port ${signalingServer.port}`);
+	}
+	virtualDisplay = await waitForVirtualDisplay();
+	sharingSession = createSharingSession(virtualDisplay);
+	console.log(`[iPad Host] Ready at http://${IPAD_BIND_IP}:${IPAD_PORT}/`);
 }
 
-// Entry point
-console.log('[iPad Host] Initializing...');
-startIpadHost().catch(err => {
-    console.error('[iPad Host] Fatal error:', err);
-    process.exit(1);
+app.on('before-quit', () => {
+	isQuitting = true;
+	sharingSession?.destroy();
+	try {
+		signalingServer.stop();
+	} catch (_) {
+		// The server may not have reached listen() when startup failed.
+	}
+});
+
+void startIpadHost().catch((error) => {
+	console.error('[iPad Host] Fatal startup error:', error);
+	app.exit(1);
 });

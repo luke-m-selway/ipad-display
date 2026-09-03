@@ -18,6 +18,9 @@ import type { SendEncryptedMessagePayload } from '../../../../common/SendEncrypt
 import { Socket } from 'socket.io-client';
 
 type DisplaySize = { width: number; height: number };
+type SimplePeerWithRTCPeerConnection = {
+	_pc?: RTCPeerConnection;
+};
 
 export interface PartnerPeerUser {
 	username: string;
@@ -43,7 +46,7 @@ export default class PeerConnection {
 		deviceScreenWidth: 0,
 		deviceScreenHeight: 0,
 	} as Device;
-	signalsDataToCallUser: string[];
+	signalsDataToCallUser: unknown[];
 	isCallStarted: boolean;
 	onDeviceConnectedCallback: (device: Device) => void;
 	displayID: string;
@@ -285,7 +288,7 @@ export default class PeerConnection {
 		if (this.isCallStarted) return;
 		this.isCallStarted = true;
 
-		this.signalsDataToCallUser.forEach((data: string) => {
+		this.signalsDataToCallUser.forEach((data) => {
 			this.sendEncryptedMessage({
 				type: 'CALL_USER',
 				payload: {
@@ -308,40 +311,45 @@ export default class PeerConnection {
 	 * Apply degradation preference to maintain resolution over frame rate.
 	 * This should be called after the stream is attached to the peer.
 	 */
-	applyDegradationPreference(): void {
+	async applyDegradationPreference(): Promise<void> {
 		// Access the underlying RTCPeerConnection via simple-peer's internal _pc
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const pc = (this.peer as any)?._pc;
+		const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
 		if (!pc || typeof pc.getSenders !== 'function') {
-			console.log('[PeerConnection] Cannot apply degradation preference - peer not ready');
+			console.log(
+				'[PeerConnection] Leaving default degradation preference: sender is unavailable',
+			);
 			return;
 		}
 
 		try {
 			const senders = pc.getSenders();
-			const videoSender = senders.find((s: RTCRtpSender) => s.track?.kind === 'video');
-			
-			if (videoSender && videoSender.parameters) {
-				// Feature detection: only set if degradationPreference is supported
-				if ('degradationPreference' in videoSender.parameters || 
-					Object.getOwnPropertyDescriptor(videoSender.parameters, 'degradationPreference')) {
-					// Create new params with the setting
-					const currentParams = videoSender.parameters;
-					const newParams = { ...currentParams };
-					
-					// Check if we can set it via upgrade()
-					if (typeof videoSender.getParameters === 'function') {
-						const params = videoSender.getParameters();
-						if (params && !params.degradationPreference) {
-							// Can only set if not already set by other means
-							console.log('[PeerConnection] Setting degradationPreference to maintain-resolution');
-						}
-					}
-				}
+			const videoSender = senders.find(
+				(sender: RTCRtpSender) => sender.track?.kind === 'video',
+			);
+			if (
+				!videoSender ||
+				typeof videoSender.getParameters !== 'function' ||
+				typeof videoSender.setParameters !== 'function'
+			) {
+				console.log(
+					'[PeerConnection] Leaving default degradation preference: API is unavailable',
+				);
+				return;
 			}
-			console.log('[PeerConnection] Degradation preference applied');
+
+			const parameters = videoSender.getParameters() as RTCRtpSendParameters & {
+				degradationPreference?: string;
+			};
+			parameters.degradationPreference = 'maintain-resolution';
+			await videoSender.setParameters(parameters);
+			console.log(
+				'[PeerConnection] Applied maintain-resolution to the outbound video sender',
+			);
 		} catch (e) {
-			console.log('[PeerConnection] Degradation preference not supported:', e);
+			console.log(
+				'[PeerConnection] Leaving default degradation preference after setParameters failed:',
+				e,
+			);
 		}
 	}
 }

@@ -11,6 +11,11 @@ const hasBundle = (directory: string, indexFile: string = 'index.html'): boolean
 	return existsSync(indexPath);
 };
 
+const hasIpadViewerBundle = (directory: string): boolean =>
+	hasBundle(directory) &&
+	existsSync(join(directory, 'vendor/socket.io.min.js')) &&
+	existsSync(join(directory, 'vendor/simplepeer.min.js'));
+
 const normalizeCandidates = (candidates: string[]): string[] => {
 	const normalized = new Set<string>();
 
@@ -73,7 +78,7 @@ export const getIpadViewerDistPath = (): string => {
 	]);
 
 	for (const candidate of candidates) {
-		if (hasBundle(candidate)) {
+		if (hasIpadViewerBundle(candidate)) {
 			console.log('[iPad Viewer] Found at:', candidate);
 			return candidate;
 		}
