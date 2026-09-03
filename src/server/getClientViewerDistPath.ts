@@ -2,13 +2,13 @@ import { existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { app } from 'electron';
 
-const hasClientViewerBundle = (directory: string): boolean => {
+const hasBundle = (directory: string, indexFile: string = 'index.html'): boolean => {
 	if (!directory) {
 		return false;
 	}
 
-	const indexFile = join(directory, 'index.html');
-	return existsSync(indexFile);
+	const indexPath = join(directory, indexFile);
+	return existsSync(indexPath);
 };
 
 const normalizeCandidates = (candidates: string[]): string[] => {
@@ -41,7 +41,29 @@ export const getClientViewerDistPath = (): string => {
 	]);
 
 	for (const candidate of candidates) {
-		if (hasClientViewerBundle(candidate)) {
+		if (hasBundle(candidate)) {
+			return candidate;
+		}
+	}
+
+	return '';
+};
+
+export const getIpadViewerDistPath = (): string => {
+	const resourcesPath = process.resourcesPath ?? '';
+	const appPath = app.getAppPath();
+
+	const candidates = normalizeCandidates([
+		join(__dirname, '../ipad-viewer'),
+		join(appPath, 'ipad-viewer'),
+		join(appPath, 'out/ipad-viewer'),
+		join(resourcesPath, 'ipad-viewer'),
+		join(resourcesPath, 'app.asar.unpacked/ipad-viewer'),
+		join(process.cwd(), 'out/ipad-viewer'),
+	]);
+
+	for (const candidate of candidates) {
+		if (hasBundle(candidate)) {
 			return candidate;
 		}
 	}

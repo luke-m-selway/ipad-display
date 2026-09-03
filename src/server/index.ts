@@ -22,9 +22,12 @@ import DarkwireSocket from './darkwireSocket';
 import getStore from './store';
 import { getDeskreenGlobal } from '../main/helpers/getDeskreenGlobal';
 import getMyLocalIpV4 from '../main/helpers/getMyLocalIpV4';
-import { getClientViewerDistPath } from './getClientViewerDistPath';
+import { getClientViewerDistPath, getIpadViewerDistPath } from './getClientViewerDistPath';
 
 const { hostname, primaryPort, backupPort } = config;
+
+// Check if running in iPad mode
+const isIpadMode = process.env.IPAD_MODE === '1';
 
 const getRoomIdHash = (id: string): string => {
 	return crypto.createHash('sha256').update(id).digest('hex');
@@ -97,7 +100,19 @@ class DeskreenSignalingServer {
 		this.backupPort = parseInt(backupPort as unknown as string, 10);
 
 		this.port = this.primaryPort;
-		this.clientDistDirectory = getClientViewerDistPath();
+		
+		// Use iPad viewer in iPad mode, otherwise use standard client viewer
+		if (isIpadMode) {
+			this.clientDistDirectory = getIpadViewerDistPath();
+			if (this.clientDistDirectory) {
+				this.log.info('Using iPad viewer bundle');
+			} else {
+				this.log.warn('iPad viewer bundle not found, will try client viewer');
+				this.clientDistDirectory = getClientViewerDistPath();
+			}
+		} else {
+			this.clientDistDirectory = getClientViewerDistPath();
+		}
 
 		if (!this.clientDistDirectory) {
 			this.log.error(
@@ -219,8 +234,9 @@ class DeskreenSignalingServer {
 					}
 				});
 
-				// Attempt to listen on all interfaces (0.0.0.0) to allow both local and local network access
-				this.server.listen(port, '0.0.0.0', () => {
+				// Bind to specific IP (USB/private link) or fallback to all interfaces
+				const bindHost = process.env.IPAD_BIND_IP || '0.0.0.0';
+				this.server.listen(port, bindHost, () => {
 					this.listenCallback()();
 					resolve(this.server);
 				});

@@ -1,0 +1,180 @@
+#!/bin/bash
+# iPad Display Workflow CLI
+# Single command to start/stop the iPad streaming workflow
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VIRTUAL_DISPLAY_BIN="$HOME/ipad-4x3-display"
+PID_FILE="/tmp/ipad-display.pid"
+LOG_FILE="/tmp/ipad-display.log"
+FIXED_ROOM_ID="ipad-main"
+FIXED_PORT=3131
+BIND_IP="192.168.2.1"
+
+# Detect if running from the ipad-display repository
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ELECTRON_APP="$REPO_DIR"
+
+usage() {
+    echo "Usage: ipad [start|stop|status]"
+    echo ""
+    echo "Commands:"
+    echo "  start   Start the iPad display virtual screen and streaming host"
+    echo "  stop    Stop all iPad display processes"
+    echo "  status  Check if iPad display is running"
+    echo ""
+    echo "The iPad will connect at: http://${BIND_IP}:${FIXED_PORT}/"
+}
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
+}
+
+stop_processes() {
+    log "Stopping iPad display workflow..."
+    
+    # Stop Electron if running
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            log "Stopping Electron process $PID..."
+            kill "$PID" 2>/dev/null || true
+            sleep 1
+            # Force kill if still running
+            kill -9 "$PID" 2>/dev/null || true
+        fi
+        rm -f "$PID_FILE"
+    fi
+    
+    # Kill any remaining electron processes for this app
+    pkill -f "deskreen-ce.*ipad-host" 2>/dev/null || true
+    
+    # Stop virtual display (if we started it)
+    pkill -f "ipad-4x3-display" 2>/dev/null || true
+    
+    log "iPad display workflow stopped."
+}
+
+start_ipad_mode() {
+    log "Starting iPad display workflow..."
+    
+    # Check if already running
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            log "iPad display is already running (PID: $PID)"
+            return 0
+        fi
+        rm -f "$PID_FILE"
+    fi
+    
+    # Verify virtual display binary exists
+    if [ ! -x "$VIRTUAL_DISPLAY_BIN" ]; then
+        log "ERROR: Virtual display binary not found at $VIRTUAL_DISPLAY_BIN"
+        log "Please compile it first:"
+        log "  clang -o ~/ipad-4x3-display ~/ipad-4x3-display.m -framework Cocoa -framework CoreGraphics"
+        return 1
+    fi
+    
+    # Start virtual display if not already running
+    if ! pgrep -f "ipad-4x3-display" > /dev/null; then
+        log "Starting virtual display..."
+        "$VIRTUAL_DISPLAY_BIN" &
+        sleep 2
+    else
+        log "Virtual display already running"
+    fi
+    
+    # Wait for virtual display to be ready
+    sleep 1
+    
+    # Verify 1600x1200 display exists
+    log "Verifying virtual display..."
+    
+    # Build the app first
+    log "Building Electron app..."
+    cd "$REPO_DIR"
+    
+    # Set environment for iPad mode
+    export IPAD_MODE=1
+    export IPAD_FIXED_ROOM_ID="$FIXED_ROOM_ID"
+    export IPAD_BIND_IP="$BIND_IP"
+    export ELECTRON_DISABLE_SANDBOX=1
+    
+    # Build the client viewer (needed by the server)
+    log "Building client viewer..."
+    npm run buildClientViewer >> "$LOG_FILE" 2>&1 || true
+    
+    # Build the iPad viewer
+    log "Building iPad viewer..."
+    mkdir -p "$REPO_DIR/out/ipad-viewer"
+    cp "$REPO_DIR/src/ipad-viewer/index.html" "$REPO_DIR/out/ipad-viewer/index.html"
+    
+    # Start Electron in iPad mode
+    log "Starting Electron in iPad mode..."
+    
+    # Use electron-vite to build and run
+    npx electron-vite build >> "$LOG_FILE" 2>&1 || {
+        log "Build failed, check $LOG_FILE for details"
+        return 1
+    }
+    
+    # Find the electron binary
+    ELECTRON_BIN="$REPO_DIR/node_modules/.bin/electron"
+    
+    if [ ! -x "$ELECTRON_BIN" ]; then
+        log "ERROR: Electron binary not found"
+        return 1
+    fi
+    
+    # Start the app with iPad mode environment
+    IPAD_MODE=1 IPAD_FIXED_ROOM_ID="$FIXED_ROOM_ID" IPAD_BIND_IP="$BIND_IP" \
+        "$ELECTRON_BIN" "$REPO_DIR/out/main/ipad-host.js" >> "$LOG_FILE" 2>&1 &
+    ELECTRON_PID=$!
+    
+    # Save PID
+    echo "$ELECTRON_PID" > "$PID_FILE"
+    
+    log "iPad display workflow started (PID: $ELECTRON_PID)"
+    log "Connect your iPad to: http://${BIND_IP}:${FIXED_PORT}/"
+    
+    return 0
+}
+
+check_status() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "iPad display is RUNNING (PID: $PID)"
+            echo "Connect your iPad to: http://${BIND_IP}:${FIXED_PORT}/"
+            return 0
+        fi
+    fi
+    
+    if pgrep -f "deskreen-ce.*ipad-host" > /dev/null; then
+        echo "iPad display Electron is RUNNING (found by process)"
+        return 0
+    fi
+    
+    echo "iPad display is NOT running"
+    return 1
+}
+
+# Main command handling
+case "${1:-start}" in
+    start)
+        start_ipad_mode
+        ;;
+    stop)
+        stop_processes
+        ;;
+    status)
+        check_status
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac

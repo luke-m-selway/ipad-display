@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>iPad Display</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+        }
+        #video-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #666;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 16px;
+        }
+        #status {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: #666;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 12px;
+        }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <div id="video-container">
+        <div id="loading">Connecting...</div>
+        <video id="video" autoplay muted playsinline></video>
+    </div>
+    <div id="status"></div>
+
+    <script type="module">
+        // iPad Display Viewer - Minimal native video player with WebRTC signaling
+        const ROOM_ID = 'ipad-main';
+        const SERVER_PORT = window.location.port || 3131;
+        
+        let peerConnection = null;
+        let socket = null;
+        let isInitiator = false;
+        let hasReceivedStream = false;
+        
+        const videoEl = document.getElementById('video');
+        const loadingEl = document.getElementById('loading');
+        const statusEl = document.getElementById('status');
+        
+        function updateStatus(msg) {
+            statusEl.textContent = msg;
+            console.log('[iPad Viewer]', msg);
+        }
+        
+        // WebRTC Configuration - prefer resolution over frame rate
+        const rtcConfig = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+        
+        // Set degradation preference to maintain resolution
+        function getPeerConnection() {
+            const pc = new RTCPeerConnection(rtcConfig);
+            
+            // Set degradation preference to maintain resolution over frame rate
+            const sender = pc.createTransceiver().sender;
+            sender.parameters.degradationPreference = 'maintain-resolution';
+            
+            return pc;
+        }
+        
+        function handleSignalingMessage(data) {
+            switch (data.type) {
+                case 'offer':
+                    peerConnection = getPeerConnection();
+                    setupPeerConnection();
+                    peerConnection.setRemoteDescription(new RTCSessionDescription(data))
+                        .then(() => peerConnection.createAnswer())
+                        .then(answer => peerConnection.setLocalDescription(answer))
+                        .then(() => sendSignal({ type: 'answer', sdp: peerConnection.localDescription }));
+                    break;
+                    
+                case 'answer':
+                    peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+                    break;
+                    
+                case 'candidate':
+                    if (data.candidate) {
+                        peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    }
+                    break;
+            }
+        }
+        
+        function sendSignal(data) {
+            if (socket && socket.connected) {
+                socket.emit('MESSAGE', {
+                    type: 'SIGNAL',
+                    payload: data
+                });
+            }
+        }
+        
+        function setupPeerConnection() {
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    sendSignal({ type: 'candidate', candidate: event.candidate });
+                }
+            };
+            
+            peerConnection.ontrack = (event) => {
+                if (!hasReceivedStream && event.streams && event.streams[0]) {
+                    hasReceivedStream = true;
+                    loadingEl.classList.add('hidden');
+                    videoEl.srcObject = event.streams[0];
+                    updateStatus('Streaming');
+                }
+            };
+            
+            peerConnection.oniceconnectionstatechange = () => {
+                updateStatus('Connection: ' + peerConnection.iceConnectionState);
+                if (peerConnection.iceConnectionState === 'connected') {
+                    loadingEl.classList.add('hidden');
+                }
+            };
+        }
+        
+        function startCall() {
+            isInitiator = true;
+            peerConnection = getPeerConnection();
+            setupPeerConnection();
+            
+            peerConnection.createOffer()
+                .then(offer => peerConnection.setLocalDescription(offer))
+                .then(() => sendSignal({ type: 'offer', sdp: peerConnection.localDescription }));
+        }
+        
+        // Connect to signaling server
+        function connect() {
+            updateStatus('Connecting to server...');
+            
+            // Dynamic import for Socket.IO
+            import('/socket.io/socket.io.js').then(() => {
+                socket = io(window.location.origin, {
+                    query: { roomId: ROOM_ID },
+                    transports: ['websocket', 'polling']
+                });
+                
+                socket.on('connect', () => {
+                    updateStatus('Connected, joining room...');
+                    socket.emit('USER_ENTER', { username: 'iPad-Viewer' });
+                });
+                
+                socket.on('USER_ENTER', (room) => {
+                    updateStatus('Room joined, starting stream...');
+                    // Small delay to ensure everything is ready
+                    setTimeout(startCall, 500);
+                });
+                
+                socket.on('MESSAGE', (data) => {
+                    if (data.type === 'SIGNAL') {
+                        handleSignalingMessage(data.payload);
+                    }
+                });
+                
+                socket.on('ALLOWED_TO_CONNECT', () => {
+                    updateStatus('Host approved, connecting...');
+                    setTimeout(startCall, 300);
+                });
+                
+                socket.on('DENY_TO_CONNECT', () => {
+                    updateStatus('Connection denied by host');
+                    loadingEl.textContent = 'Connection denied';
+                });
+                
+                socket.on('disconnect', () => {
+                    updateStatus('Disconnected');
+                });
+                
+                socket.on('connect_error', (err) => {
+                    updateStatus('Connection error: ' + err.message);
+                    loadingEl.textContent = 'Connection failed - check server';
+                });
+                
+            }).catch(err => {
+                updateStatus('Failed to load Socket.IO: ' + err.message);
+                loadingEl.textContent = 'Failed to load signaling client';
+            });
+        }
+        
+        // Auto-connect on load
+        connect();
+    </script>
+</body>
+</html>
