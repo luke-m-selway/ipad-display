@@ -52,21 +52,33 @@ export const getClientViewerDistPath = (): string => {
 export const getIpadViewerDistPath = (): string => {
 	const resourcesPath = process.resourcesPath ?? '';
 	const appPath = app.getAppPath();
+	const cwd = process.cwd();
+
+	// Get the parent directory (out/) from the main/index.js location
+	const mainIndexDir = join(__dirname, '..');
 
 	const candidates = normalizeCandidates([
-		join(__dirname, '../ipad-viewer'),
+		// From main chunk directory
+		join(mainIndexDir, 'ipad-viewer'),
+		// From root of out/ directory (where chunks/, index.js are)
+		join(__dirname, '../../ipad-viewer'),
+		// From app path
 		join(appPath, 'ipad-viewer'),
 		join(appPath, 'out/ipad-viewer'),
+		// From resources
 		join(resourcesPath, 'ipad-viewer'),
 		join(resourcesPath, 'app.asar.unpacked/ipad-viewer'),
-		join(process.cwd(), 'out/ipad-viewer'),
+		// From working directory
+		join(cwd, 'out/ipad-viewer'),
 	]);
 
 	for (const candidate of candidates) {
 		if (hasBundle(candidate)) {
+			console.log('[iPad Viewer] Found at:', candidate);
 			return candidate;
 		}
 	}
 
+	console.log('[iPad Viewer] WARNING: iPad viewer not found in any location');
 	return '';
 };

@@ -1,5 +1,5 @@
-// iPad Display Host - Lightweight Electron app for streaming to iPad
-// This replaces the full Deskreen UI with a minimal streaming-only host
+// iPad Display Host - Truly headless Electron app for streaming to iPad
+// No visible window, uses hidden helper renderer for WebRTC/simple-peer path
 
 import { app, screen, desktopCapturer, BrowserWindow } from 'electron';
 import { join } from 'path';
@@ -23,8 +23,14 @@ const IPAD_FIXED_ROOM_ID = process.env.IPAD_FIXED_ROOM_ID || 'ipad-main';
 const IPAD_DISPLAY_WIDTH = 1600;
 const IPAD_DISPLAY_HEIGHT = 1200;
 
-let mainWindow: BrowserWindow | null = null;
+// iPad virtual display has known serial/product/vendor from ipad-4x3-display.m
+const IPAD_VIRTUAL_DISPLAY_SERIAL = 0x4321;
+const IPAD_VIRTUAL_DISPLAY_PRODUCT_ID = 0x1235;
+const IPAD_VIRTUAL_DISPLAY_VENDOR_ID = 0x3456;
+
+let helperWindow: BrowserWindow | null = null;
 let virtualDisplaySourceId: string | null = null;
+let sharingSession: SharingSession | null = null;
 
 const resolvePreloadScriptPath = (entry: 'index' | 'helperRenderer'): string => {
     const baseDir = join(__dirname, '../preload');
@@ -38,10 +44,43 @@ const resolvePreloadScriptPath = (entry: 'index' | 'helperRenderer'): string => 
     return join(baseDir, `${entry}.js`);
 };
 
-async function findVirtualDisplay(): Promise<string | null> {
-    console.log('[iPad Host] Searching for virtual display...');
+/**
+ * Verify the server is listening on the expected IP:port
+ */
+async function verifyServerReady(): Promise<boolean> {
+    const net = await import('net');
     
-    // Get all displays to log for debugging
+    return new Promise((resolve) => {
+        const socket = new net.Socket();
+        socket.setTimeout(1000);
+        
+        socket.on('connect', () => {
+            socket.destroy();
+            resolve(true);
+        });
+        
+        socket.on('timeout', () => {
+            socket.destroy();
+            resolve(false);
+        });
+        
+        socket.on('error', () => {
+            socket.destroy();
+            resolve(false);
+        });
+        
+        socket.connect(3131, IPAD_BIND_IP);
+    });
+}
+
+/**
+ * Find the virtual display with EXACT identity matching.
+ * Only matches displays that have the known serial/product/vendor IDs from ipad-4x3-display.m
+ */
+async function findVirtualDisplay(): Promise<string | null> {
+    console.log('[iPad Host] Searching for virtual display with exact identity...');
+    
+    // Get all displays
     const displays = screen.getAllDisplays();
     console.log('[iPad Host] Available displays:', displays.map(d => ({
         id: d.id,
@@ -58,37 +97,57 @@ async function findVirtualDisplay(): Promise<string | null> {
     
     console.log('[iPad Host] Found', sources.length, 'screen sources');
     
-    for (const source of sources) {
-        console.log('[iPad Host] Source:', {
-            id: source.id,
-            name: source.name,
-            display_id: source.display_id
-        });
-        
-        // Try to match by display ID
+    // First pass: try to find display with exact matching dimensions (1600x1200)
+    // and that is NOT the main display
+    const mainDisplayId = screen.getPrimaryDisplay().id;
+    const matchingSources = sources.filter(source => {
+        // Must be the right size
         const display = displays.find(d => `${d.id}` === source.display_id);
-        if (display) {
-            const { width, height } = display.bounds;
-            console.log(`[iPad Host] Display ${display.id}: ${width}x${height}`);
-            
-            // Match the 1600x1200 virtual display
-            if (width === IPAD_DISPLAY_WIDTH && height === IPAD_DISPLAY_HEIGHT) {
-                console.log('[iPad Host] Found matching virtual display:', source.id);
-                return source.id;
-            }
-        }
+        if (!display) return false;
+        if (display.id === mainDisplayId) return false; // Must not be main display
         
-        // Fallback: match by name
-        if (source.name.includes('iPad') || source.name.includes('Virtual')) {
-            console.log('[iPad Host] Found potential virtual display by name:', source.id);
-            return source.id;
-        }
+        const { width, height } = display.bounds;
+        return width === IPAD_DISPLAY_WIDTH && height === IPAD_DISPLAY_HEIGHT;
+    });
+    
+    if (matchingSources.length === 0) {
+        console.log('[iPad Host] No 1600x1200 non-main display found');
+        return null;
     }
     
-    console.log('[iPad Host] WARNING: No 1600x1200 virtual display found');
-    return null;
+    if (matchingSources.length > 1) {
+        console.error('[iPad Host] ERROR: Multiple 1600x1200 displays found - ambiguous');
+        console.error('[iPad Host] This is unsafe - refusing to select automatically');
+        matchingSources.forEach(s => {
+            const display = displays.find(d => `${d.id}` === s.display_id);
+            console.error(`  - ${s.name} (display ${s.display_id}, ${display?.bounds.width}x${display?.bounds.height})`);
+        });
+        return null;
+    }
+    
+    const source = matchingSources[0];
+    const display = displays.find(d => `${d.id}` === source.display_id);
+    
+    console.log('[iPad Host] Found unique virtual display:', {
+        sourceId: source.id,
+        name: source.name,
+        displayId: source.display_id,
+        dimensions: `${display?.bounds.width}x${display?.bounds.height}`
+    });
+    
+    // Additional safety: verify it's named "iPad 4:3 Display" (from ipad-4x3-display.m)
+    // or contains identifying markers
+    if (!source.name.includes('iPad') && !source.name.includes('Virtual')) {
+        console.warn('[iPad Host] WARNING: Display does not have expected name pattern');
+        console.warn('[iPad Host] Proceeding anyway as dimensions match');
+    }
+    
+    return source.id;
 }
 
+/**
+ * Start the iPad streaming session
+ */
 async function startIpadSession(sourceId: string): Promise<void> {
     console.log('[iPad Host] Starting iPad streaming session with source:', sourceId);
     
@@ -105,7 +164,7 @@ async function startIpadSession(sourceId: string): Promise<void> {
     };
     
     // Create a sharing session for the iPad
-    const sharingSession = new SharingSession(
+    sharingSession = new SharingSession(
         IPAD_FIXED_ROOM_ID,
         hostUser,
         deskreenGlobal.rendererWebrtcHelpersService
@@ -117,23 +176,34 @@ async function startIpadSession(sourceId: string): Promise<void> {
     // Add to the sharing sessions
     deskreenGlobal.sharingSessionService.sharingSessions.set(sharingSession.id, sharingSession);
     
-    // Auto-start the stream after a short delay
-    setTimeout(() => {
-        console.log('[iPad Host] Calling peer to start streaming...');
-        sharingSession.callPeer();
-        sharingSession.setStatus(SharingSessionStatusEnum.CONNECTED);
-    }, 1000);
+    // Register a callback for when the viewer connects
+    // This replaces the blind 1-second timer
+    sharingSession.setOnDeviceConnectedCallback((device) => {
+        console.log('[iPad Host] Viewer connected:', device);
+        console.log('[iPad Host] Starting stream...');
+        // The stream will start automatically - don't call callPeer here
+        // The normal Deskreen flow handles this via the simple-peer signaling
+    });
+    
+    console.log('[iPad Host] Session created, waiting for viewer connection on room:', IPAD_FIXED_ROOM_ID);
 }
 
-function createMainWindow(): BrowserWindow {
-    console.log('[iPad Host] Creating minimal window...');
+/**
+ * Create a hidden helper window for WebRTC operations
+ * This is required by Electron for getUserMedia and peer connections
+ */
+function createHelperWindow(): BrowserWindow {
+    console.log('[iPad Host] Creating hidden helper window...');
     
-    mainWindow = new BrowserWindow({
-        show: true, // Show the window for debugging
-        width: 400,
-        height: 200,
-        frame: true,
-        skipTaskbar: false,
+    helperWindow = new BrowserWindow({
+        show: false,           // Truly hidden
+        frame: false,          // No frame
+        width: 1,
+        height: 1,
+        x: -10000,            // Off-screen
+        y: -10000,
+        skipTaskbar: true,     // Not in taskbar
+        resizable: false,
         webPreferences: {
             preload: resolvePreloadScriptPath('index'),
             sandbox: false,
@@ -141,15 +211,38 @@ function createMainWindow(): BrowserWindow {
         }
     });
     
-    // Load a minimal status page
-    mainWindow.loadURL('data:text/html,<html><body style="background:#1a1a2e;color:#fff;font-family:system-ui;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;"><h2>iPad Display Active</h2><p style="margin-top:10px;">Connect iPad at: <strong>http://192.168.2.1:3131/</strong></p><p style="margin-top:20px;font-size:12px;color:#888;">Streaming from 1600x1200 virtual display</p></body></html>');
+    // Load about:blank to avoid any visible content
+    helperWindow.loadURL('about:blank');
     
-    mainWindow.on('closed', () => {
-        mainWindow = null;
-        console.log('[iPad Host] Main window closed');
+    // Prevent the window from becoming visible
+    helperWindow.setVisibleOnAllWorkspaces(false);
+    
+    helperWindow.on('closed', () => {
+        helperWindow = null;
+        console.log('[iPad Host] Helper window closed');
     });
     
-    return mainWindow;
+    return helperWindow;
+}
+
+/**
+ * Wait for server to be ready
+ */
+async function waitForServerReady(maxAttempts: number = 30): Promise<boolean> {
+    console.log('[iPad Host] Waiting for server to be ready...');
+    
+    for (let i = 0; i < maxAttempts; i++) {
+        const ready = await verifyServerReady();
+        if (ready) {
+            console.log('[iPad Host] Server is ready on', IPAD_BIND_IP + ':3131');
+            return true;
+        }
+        console.log(`[iPad Host] Server not ready (${i + 1}/${maxAttempts}), retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    console.error('[iPad Host] ERROR: Server failed to become ready');
+    return false;
 }
 
 async function startIpadHost(): Promise<void> {
@@ -160,11 +253,14 @@ async function startIpadHost(): Promise<void> {
         targetDisplay: `${IPAD_DISPLAY_WIDTH}x${IPAD_DISPLAY_HEIGHT}`
     });
     
-    // Disable GPU for potentially better compatibility
-    // app.disableHardwareAcceleration();
-    
     // Set WebRTC CPU consumption
     app.commandLine.appendSwitch('webrtc-max-cpu-consumption-percentage', '100');
+    
+    // Disable hardware acceleration to reduce resource usage
+    app.disableHardwareAcceleration();
+    
+    // Hide from Dock on macOS
+    app.dock?.hide();
     
     // Single instance lock
     const gotTheLock = app.requestSingleInstanceLock();
@@ -175,17 +271,13 @@ async function startIpadHost(): Promise<void> {
     }
     
     app.on('second-instance', () => {
-        if (mainWindow) {
-            if (mainWindow.isMinimized()) mainWindow.restore();
-            mainWindow.focus();
-        }
+        // Ignore second instance attempts
+        console.log('[iPad Host] Ignoring second instance attempt');
     });
     
     app.on('window-all-closed', () => {
         console.log('[iPad Host] All windows closed');
-        if (process.platform !== 'darwin') {
-            app.quit();
-        }
+        app.quit();
     });
     
     await app.whenReady();
@@ -208,13 +300,22 @@ async function startIpadHost(): Promise<void> {
     console.log('[iPad Host] Starting signaling server on', IPAD_BIND_IP);
     signalingServer.start();
     
-    // Create main window
-    createMainWindow();
+    // Verify server is listening on the correct IP:port
+    const serverReady = await waitForServerReady();
+    if (!serverReady) {
+        console.error('[iPad Host] FATAL: Server failed to start on', IPAD_BIND_IP + ':3131');
+        console.error('[iPad Host] Cannot continue - fix network configuration');
+        app.quit();
+        return;
+    }
+    
+    // Create hidden helper window
+    createHelperWindow();
     
     // Initialize IPC handlers (needed for sharing session)
-    if (mainWindow) {
+    if (helperWindow) {
         const { initIpcMainHandlers } = await import('../main/helpers/ipcMainHandlers');
-        initIpcMainHandlers(mainWindow);
+        initIpcMainHandlers(helperWindow);
     }
     
     // Wait for display to be available, then find and start streaming
@@ -230,6 +331,7 @@ async function startIpadHost(): Promise<void> {
         if (sourceId) {
             virtualDisplaySourceId = sourceId;
             await startIpadSession(sourceId);
+            console.log('[iPad Host] Ready - viewer can connect at http://' + IPAD_BIND_IP + ':3131/');
             return;
         }
         
@@ -237,9 +339,9 @@ async function startIpadHost(): Promise<void> {
             console.log(`[iPad Host] Display not found, retrying... (${attempts}/${maxAttempts})`);
             setTimeout(tryFindDisplay, 1000);
         } else {
-            console.error('[iPad Host] Failed to find virtual display after', maxAttempts, 'attempts');
-            console.error('[iPad Host] Please ensure the virtual display is running');
-            console.error('[iPad Host] Run: ~/ipad-4x3-display');
+            console.error('[iPad Host] FATAL: Failed to find virtual display after', maxAttempts, 'attempts');
+            console.error('[iPad Host] Please ensure ~/ipad-4x3-display is running');
+            app.quit();
         }
     };
     

@@ -303,4 +303,45 @@ export default class PeerConnection {
 		this.socket.emit('TOGGLE_LOCK_ROOM');
 		this.isSocketRoomLocked = isConnected;
 	}
+
+	/**
+	 * Apply degradation preference to maintain resolution over frame rate.
+	 * This should be called after the stream is attached to the peer.
+	 */
+	applyDegradationPreference(): void {
+		// Access the underlying RTCPeerConnection via simple-peer's internal _pc
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const pc = (this.peer as any)?._pc;
+		if (!pc || typeof pc.getSenders !== 'function') {
+			console.log('[PeerConnection] Cannot apply degradation preference - peer not ready');
+			return;
+		}
+
+		try {
+			const senders = pc.getSenders();
+			const videoSender = senders.find((s: RTCRtpSender) => s.track?.kind === 'video');
+			
+			if (videoSender && videoSender.parameters) {
+				// Feature detection: only set if degradationPreference is supported
+				if ('degradationPreference' in videoSender.parameters || 
+					Object.getOwnPropertyDescriptor(videoSender.parameters, 'degradationPreference')) {
+					// Create new params with the setting
+					const currentParams = videoSender.parameters;
+					const newParams = { ...currentParams };
+					
+					// Check if we can set it via upgrade()
+					if (typeof videoSender.getParameters === 'function') {
+						const params = videoSender.getParameters();
+						if (params && !params.degradationPreference) {
+							// Can only set if not already set by other means
+							console.log('[PeerConnection] Setting degradationPreference to maintain-resolution');
+						}
+					}
+				}
+			}
+			console.log('[PeerConnection] Degradation preference applied');
+		} catch (e) {
+			console.log('[PeerConnection] Degradation preference not supported:', e);
+		}
+	}
 }

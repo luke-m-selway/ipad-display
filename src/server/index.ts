@@ -190,17 +190,23 @@ class DeskreenSignalingServer {
 
 	async callListenOnHttpServer(): Promise<http.Server> {
 		return new Promise<http.Server>((resolve, reject) => {
-			const tryListen = (port: number): void => {
+			const tryListen = (port: number, bindHost: string): void => {
 				// Remove any previous error listeners
 				this.server.removeAllListeners('error');
 
 				// Set up error handler
 				this.server.once('error', async (error: NodeJS.ErrnoException) => {
-					if (
-						error.code === 'EADDRINUSE' &&
-						(port === this.primaryPort || port === this.backupPort)
-					) {
-						// Primary port is already in use, try backup
+					if (error.code === 'EADDRINUSE' && port === this.primaryPort) {
+						// In iPad mode, fail clearly instead of falling back
+						if (isIpadMode) {
+							this.log.error(`FATAL: Port ${port} is already in use`);
+							this.log.error(`iPad mode requires exactly ${bindHost}:${port}`);
+							this.log.error(`Please stop any other application using port ${port}`);
+							reject(new Error(`Port ${port} is already in use - iPad mode requires this exact port`));
+							return;
+						}
+						
+						// Normal mode: try backup port
 						this.log.error(`Port ${port} is already in use`);
 						this.log.warn(
 							`Port ${primaryPort} is in use. Trying backup port ${backupPort}...`,
@@ -212,13 +218,13 @@ class DeskreenSignalingServer {
 							if (backupPort === detectedBackupPort) {
 								this.log.info(`Backup port ${backupPort} is available.`);
 								this.port = backupPort;
-								tryListen(backupPort);
+								tryListen(backupPort, bindHost);
 							} else {
 								const errorMsg = `Both primary port ${primaryPort} and backup port ${backupPort} are in use`;
 								this.log.error(`Error: ${errorMsg}`);
-								// reject(new Error(errorMsg));
 								this.port = await detectPort();
-								tryListen(this.port);
+								this.log.warn(`Using detected available port ${this.port}`);
+								tryListen(this.port, bindHost);
 							}
 						} catch (err) {
 							this.log.error(
@@ -227,23 +233,34 @@ class DeskreenSignalingServer {
 							);
 							reject(err);
 						}
+					} else if (error.code === 'EADDRNOTAVAIL') {
+						// Address not available (e.g., 192.168.2.1 doesn't exist)
+						this.log.error(`FATAL: Address ${bindHost} is not available`);
+						this.log.error(`iPad mode requires this exact address for USB/private link`);
+						reject(new Error(`Address ${bindHost} is not available - check network configuration`));
 					} else {
-						// Some other error or backup port is also in use
-						this.log.error(`Failed to start server on port ${port}:`, error);
+						// Some other error
+						this.log.error(`Failed to start server on ${bindHost}:${port}:`, error);
 						reject(error);
 					}
 				});
 
-				// Bind to specific IP (USB/private link) or fallback to all interfaces
-				const bindHost = process.env.IPAD_BIND_IP || '0.0.0.0';
+				// Bind to specific IP (USB/private link) or all interfaces
 				this.server.listen(port, bindHost, () => {
 					this.listenCallback()();
 					resolve(this.server);
 				});
 			};
 
+			// In iPad mode, bind to the specific IP; otherwise bind to all interfaces
+			const bindHost = isIpadMode ? (process.env.IPAD_BIND_IP || '192.168.2.1') : '0.0.0.0';
+			
+			if (isIpadMode) {
+				this.log.info(`iPad mode: binding to fixed address ${bindHost}:${this.port}`);
+			}
+			
 			// Start with the primary port
-			tryListen(this.port);
+			tryListen(this.port, bindHost);
 		});
 	}
 

@@ -51,6 +51,9 @@ export default function handleCreatePeer(
 				// TODO: basically here we need a client side simple peer, but we get a nodejs side simple peer
 				if (peerConnection.localStream !== null) {
 					peerConnection.peer.addStream(peerConnection.localStream);
+					
+					// Apply degradation preference to maintain resolution
+					peerConnection.applyDegradationPreference();
 				}
 
 				peerConnection.peer.on('signal', (data: string) => {
