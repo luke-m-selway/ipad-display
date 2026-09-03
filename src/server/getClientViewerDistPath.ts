@@ -13,6 +13,8 @@ const hasBundle = (directory: string, indexFile: string = 'index.html'): boolean
 
 const hasIpadViewerBundle = (directory: string): boolean =>
 	hasBundle(directory) &&
+	existsSync(join(directory, 'manifest.webmanifest')) &&
+	existsSync(join(directory, 'apple-touch-icon.png')) &&
 	existsSync(join(directory, 'vendor/socket.io.min.js')) &&
 	existsSync(join(directory, 'vendor/simplepeer.min.js'));
 
