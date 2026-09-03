@@ -82,10 +82,6 @@ const copyIpadViewerStaticFiles = () => {
 						resolve(__dirname, 'node_modules/socket.io-client/dist/socket.io.min.js'),
 						resolve(vendorDir, 'socket.io.min.js'),
 					),
-					fs.copyFile(
-						resolve(__dirname, 'src/renderer/src/assets/logo192.png'),
-						resolve(destDir, 'apple-touch-icon.png'),
-					),
 				]);
 				console.log('Successfully copied iPad viewer to out/ipad-viewer');
 			} catch (err) {
