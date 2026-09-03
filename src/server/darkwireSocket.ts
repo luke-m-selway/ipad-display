@@ -117,6 +117,11 @@ export default class Socket implements SocketOPTS {
 
 		this.socket.on('MESSAGE', (payload) => {
 			payload.fromSocketID = this.socket.id;
+			if (isIpadMode) {
+				console.log(
+					`[iPad Signaling] MESSAGE ${String(payload.type)} from ${isHostOwnerSocket(this.socket) ? 'owner' : 'viewer'}`,
+				);
+			}
 			this.socket.to(this.roomId).emit('MESSAGE', payload);
 		});
 
@@ -177,6 +182,11 @@ export default class Socket implements SocketOPTS {
 				],
 			};
 			await this.saveRoom(newRoom);
+			if (isIpadMode) {
+				console.log(
+					`[iPad Signaling] USER_ENTER ${isOwnerSocket ? 'owner' : 'viewer'}; room has ${newRoom.users.length} user(s)`,
+				);
+			}
 
 			socketIOServerStore
 				.getServer()

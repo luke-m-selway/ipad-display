@@ -39,7 +39,7 @@ const ioHandleOnConnection = (socket): void => {
 	const { roomId } = socket.handshake.query;
 	const store = getStore();
 
-	setTimeout(async () => {
+	const installRoomHandlers = async (): Promise<void> => {
 		if (!getDeskreenGlobal().roomIDService.isRoomIDTaken(roomId)) {
 			socket.emit('NOT_ALLOWED');
 			setTimeout(() => {
@@ -59,7 +59,17 @@ const ioHandleOnConnection = (socket): void => {
 			socket,
 			room: parsedRoom as Room,
 		});
-		// }
+	};
+
+	if (isIpadMode) {
+		// The private host helper follows Deskreen's immediate USER_ENTER contract.
+		// Its room handler must exist before Socket.IO confirms the connection.
+		void installRoomHandlers();
+		return;
+	}
+
+	setTimeout(() => {
+		void installRoomHandlers();
 	}, 500); // timeout 500 millisecond for throttling malicious connections
 };
 
@@ -163,6 +173,11 @@ class DeskreenSignalingServer {
 
 			const clientIp = socket.request.socket.remoteAddress;
 			SocketsIPService.setIPOfSocketID(socketId, clientIp || '');
+			if (isIpadMode) {
+				this.log.info(
+					`[iPad Signaling] Socket.IO connected: ${socketId} from ${clientIp || 'unknown'}`,
+				);
+			}
 		});
 
 		io.on('connection', (socket) => {

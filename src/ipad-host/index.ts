@@ -116,6 +116,7 @@ async function waitForVirtualDisplay(): Promise<VirtualDisplaySource> {
 
 function startSharingForConnectedViewer(session: SharingSession): void {
 	return session.setOnDeviceConnectedCallback((device) => {
+		console.log('[iPad Host] Helper received DEVICE_DETAILS from viewer');
 		if (sharingSession !== session || session.status !== SharingSessionStatusEnum.NOT_CONNECTED) {
 			console.log('[iPad Host] Ignoring a duplicate viewer connection event');
 			return;
@@ -178,6 +179,7 @@ async function restartSharingSession(sessionID: string): Promise<void> {
 
 function registerIpadIPCHandlers(): void {
 	ipcMain.handle(IpcEvents.GetPort, () => signalingServer.port);
+	ipcMain.handle(IpcEvents.GetSignalingHost, () => `http://${IPAD_BIND_IP}`);
 	ipcMain.handle(IpcEvents.GetSourceDisplayIDByDesktopCapturerSourceID, (_, sourceID) =>
 		virtualDisplay?.sourceID === sourceID ? virtualDisplay.displayID : '',
 	);

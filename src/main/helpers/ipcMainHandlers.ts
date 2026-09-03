@@ -136,6 +136,8 @@ export const initIpcMainHandlers = (mainWindow: BrowserWindow): void => {
 		return signalingServer.port;
 	});
 
+	ipcMain.handle(IpcEvents.GetSignalingHost, () => 'http://127.0.0.1');
+
 	ipcMain.handle(IpcEvents.GetAppPath, () => {
 		const deskreenGlobal = getDeskreenGlobal();
 		return deskreenGlobal.appPath;

@@ -64,14 +64,16 @@ export function handleIpcRenderer(): void {
 					peerConnection = undefined;
 				}
 
-				const port = await window.electron.ipcRenderer.invoke(
-					IpcEvents.GetPort,
-				);
+				const [port, signalingHost] = await Promise.all([
+					window.electron.ipcRenderer.invoke(IpcEvents.GetPort),
+					window.electron.ipcRenderer.invoke(IpcEvents.GetSignalingHost),
+				]);
 				peerConnection = new PeerConnection(
 					data.roomID,
 					data.sharingSessionID,
 					data.user,
 					port,
+					signalingHost,
 				);
 
 				peerConnection.setOnDeviceConnectedCallback((deviceData) => {

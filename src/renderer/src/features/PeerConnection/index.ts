@@ -58,11 +58,12 @@ export default class PeerConnection {
 		sharingSessionID: string,
 		user: LocalPeerUser,
 		port: string,
+		signalingHost?: string,
 	) {
 		this.sharingSessionID = sharingSessionID;
 		this.isSocketRoomLocked = false;
 		this.roomID = encodeURI(roomID);
-		this.socket = connectSocket(port, this.roomID);
+		this.socket = connectSocket(port, this.roomID, signalingHost);
 		this.user = user;
 		this.partner = NullUser;
 		this.desktopCapturerSourceID = '';
