@@ -29,6 +29,7 @@ export enum IpcEvents {
 	SetAppStartedOnce = 'set-app-started-once',
 	DestroySharingSessionById = 'destroy-sharing-session-by-id',
 	GetPort = 'get-port',
+	GetSignalingHost = 'get-signaling-host',
 	OpenExternalLink = 'open-external-link',
 	WriteTextToClipboard = 'write-text-to-clipboard',
 	CheckScreenRecordingPermission = 'check-screen-recording-permission',

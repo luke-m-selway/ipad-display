@@ -45,7 +45,7 @@ class DesktopCapturerSourcesService {
 
 	portalSelectionPromise: Promise<DesktopCapturerSource | null> | null;
 
-	constructor() {
+	constructor(autoRefreshEnabled = !isLinuxWaylandSession) {
 		this.sources = new Map<string, DesktopCapturerSourceWithType>();
 		this.lastAvailableScreenIDs = [];
 		this.lastAvailableWindowIDs = [];
@@ -57,7 +57,7 @@ class DesktopCapturerSourcesService {
 			SharingSessionID,
 			SourcesDisappearListener[]
 		>();
-		this.autoRefreshEnabled = !isLinuxWaylandSession;
+		this.autoRefreshEnabled = autoRefreshEnabled;
 		this.refreshPromise = null;
 		this.portalSelectionPromise = null;
 

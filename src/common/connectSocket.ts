@@ -1,7 +1,11 @@
 import socketIO from 'socket.io-client';
 
-export const connectSocket = (port: string, roomId: string) => {
-	return socketIO(`http://127.0.0.1:${port}`, {
+export const connectSocket = (
+	port: string,
+	roomId: string,
+	signalingHost = 'http://127.0.0.1',
+) => {
+	return socketIO(`${signalingHost}:${port}`, {
 		query: {
 			roomId,
 		},

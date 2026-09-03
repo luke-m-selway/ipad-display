@@ -22,9 +22,14 @@ import DarkwireSocket from './darkwireSocket';
 import getStore from './store';
 import { getDeskreenGlobal } from '../main/helpers/getDeskreenGlobal';
 import getMyLocalIpV4 from '../main/helpers/getMyLocalIpV4';
-import { getClientViewerDistPath } from './getClientViewerDistPath';
+import { getClientViewerDistPath, getIpadViewerDistPath } from './getClientViewerDistPath';
 
 const { hostname, primaryPort, backupPort } = config;
+
+// Check if running in iPad mode
+const isIpadMode = process.env.IPAD_MODE === '1';
+const IPAD_BIND_IP = '192.168.2.1';
+const IPAD_PORT = 3131;
 
 const getRoomIdHash = (id: string): string => {
 	return crypto.createHash('sha256').update(id).digest('hex');
@@ -34,7 +39,7 @@ const ioHandleOnConnection = (socket): void => {
 	const { roomId } = socket.handshake.query;
 	const store = getStore();
 
-	setTimeout(async () => {
+	const installRoomHandlers = async (): Promise<void> => {
 		if (!getDeskreenGlobal().roomIDService.isRoomIDTaken(roomId)) {
 			socket.emit('NOT_ALLOWED');
 			setTimeout(() => {
@@ -54,7 +59,17 @@ const ioHandleOnConnection = (socket): void => {
 			socket,
 			room: parsedRoom as Room,
 		});
-		// }
+	};
+
+	if (isIpadMode) {
+		// The private host helper follows Deskreen's immediate USER_ENTER contract.
+		// Its room handler must exist before Socket.IO confirms the connection.
+		void installRoomHandlers();
+		return;
+	}
+
+	setTimeout(() => {
+		void installRoomHandlers();
 	}, 500); // timeout 500 millisecond for throttling malicious connections
 };
 
@@ -96,8 +111,19 @@ class DeskreenSignalingServer {
 		this.primaryPort = parseInt(primaryPort as unknown as string, 10);
 		this.backupPort = parseInt(backupPort as unknown as string, 10);
 
-		this.port = this.primaryPort;
-		this.clientDistDirectory = getClientViewerDistPath();
+		this.port = isIpadMode ? IPAD_PORT : this.primaryPort;
+		
+		// Use iPad viewer in iPad mode, otherwise use standard client viewer
+		if (isIpadMode) {
+			this.clientDistDirectory = getIpadViewerDistPath();
+			if (this.clientDistDirectory) {
+				this.log.info('Using iPad viewer bundle');
+			} else {
+				this.log.error('iPad viewer bundle is missing or incomplete');
+			}
+		} else {
+			this.clientDistDirectory = getClientViewerDistPath();
+		}
 
 		if (!this.clientDistDirectory) {
 			this.log.error(
@@ -147,6 +173,11 @@ class DeskreenSignalingServer {
 
 			const clientIp = socket.request.socket.remoteAddress;
 			SocketsIPService.setIPOfSocketID(socketId, clientIp || '');
+			if (isIpadMode) {
+				this.log.info(
+					`[iPad Signaling] Socket.IO connected: ${socketId} from ${clientIp || 'unknown'}`,
+				);
+			}
 		});
 
 		io.on('connection', (socket) => {
@@ -157,6 +188,9 @@ class DeskreenSignalingServer {
 	}
 
 	async start(): Promise<http.Server> {
+		if (isIpadMode && !this.clientDistDirectory) {
+			throw new Error('iPad viewer bundle is missing or incomplete');
+		}
 		startPollForInactiveRooms();
 		this.server = await this.callListenOnHttpServer();
 		return this.server;
@@ -175,17 +209,31 @@ class DeskreenSignalingServer {
 
 	async callListenOnHttpServer(): Promise<http.Server> {
 		return new Promise<http.Server>((resolve, reject) => {
-			const tryListen = (port: number): void => {
+			if (
+				isIpadMode &&
+				process.env.IPAD_BIND_IP &&
+				process.env.IPAD_BIND_IP !== IPAD_BIND_IP
+			) {
+				reject(new Error(`iPad mode requires ${IPAD_BIND_IP}, not ${process.env.IPAD_BIND_IP}`));
+				return;
+			}
+			const tryListen = (port: number, bindHost: string): void => {
 				// Remove any previous error listeners
 				this.server.removeAllListeners('error');
 
 				// Set up error handler
 				this.server.once('error', async (error: NodeJS.ErrnoException) => {
-					if (
-						error.code === 'EADDRINUSE' &&
-						(port === this.primaryPort || port === this.backupPort)
-					) {
-						// Primary port is already in use, try backup
+					if (error.code === 'EADDRINUSE' && port === this.primaryPort) {
+						// In iPad mode, fail clearly instead of falling back
+						if (isIpadMode) {
+							this.log.error(`FATAL: Port ${port} is already in use`);
+							this.log.error(`iPad mode requires exactly ${bindHost}:${port}`);
+							this.log.error(`Please stop any other application using port ${port}`);
+							reject(new Error(`Port ${port} is already in use - iPad mode requires this exact port`));
+							return;
+						}
+						
+						// Normal mode: try backup port
 						this.log.error(`Port ${port} is already in use`);
 						this.log.warn(
 							`Port ${primaryPort} is in use. Trying backup port ${backupPort}...`,
@@ -197,13 +245,13 @@ class DeskreenSignalingServer {
 							if (backupPort === detectedBackupPort) {
 								this.log.info(`Backup port ${backupPort} is available.`);
 								this.port = backupPort;
-								tryListen(backupPort);
+								tryListen(backupPort, bindHost);
 							} else {
 								const errorMsg = `Both primary port ${primaryPort} and backup port ${backupPort} are in use`;
 								this.log.error(`Error: ${errorMsg}`);
-								// reject(new Error(errorMsg));
 								this.port = await detectPort();
-								tryListen(this.port);
+								this.log.warn(`Using detected available port ${this.port}`);
+								tryListen(this.port, bindHost);
 							}
 						} catch (err) {
 							this.log.error(
@@ -212,22 +260,34 @@ class DeskreenSignalingServer {
 							);
 							reject(err);
 						}
+					} else if (error.code === 'EADDRNOTAVAIL') {
+						// Address not available (e.g., 192.168.2.1 doesn't exist)
+						this.log.error(`FATAL: Address ${bindHost} is not available`);
+						this.log.error(`iPad mode requires this exact address for USB/private link`);
+						reject(new Error(`Address ${bindHost} is not available - check network configuration`));
 					} else {
-						// Some other error or backup port is also in use
-						this.log.error(`Failed to start server on port ${port}:`, error);
+						// Some other error
+						this.log.error(`Failed to start server on ${bindHost}:${port}:`, error);
 						reject(error);
 					}
 				});
 
-				// Attempt to listen on all interfaces (0.0.0.0) to allow both local and local network access
-				this.server.listen(port, '0.0.0.0', () => {
+				// Bind to specific IP (USB/private link) or all interfaces
+				this.server.listen(port, bindHost, () => {
 					this.listenCallback()();
 					resolve(this.server);
 				});
 			};
 
+			// In iPad mode, bind to the specific IP; otherwise bind to all interfaces
+			const bindHost = isIpadMode ? IPAD_BIND_IP : '0.0.0.0';
+			
+			if (isIpadMode) {
+				this.log.info(`iPad mode: binding to fixed address ${bindHost}:${this.port}`);
+			}
+			
 			// Start with the primary port
-			tryListen(this.port);
+			tryListen(this.port, bindHost);
 		});
 	}
 

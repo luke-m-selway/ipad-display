@@ -15,22 +15,29 @@ export default class RendererWebrtcHelpersService {
 	}
 
 	private resolvePreloadScriptPath(entry: 'index' | 'helperRenderer'): string {
-		const baseDir = join(__dirname, '../preload');
 		const candidates = [`${entry}.js`, `${entry}.mjs`, `${entry}.cjs`];
-		for (const fileName of candidates) {
-			const fullPath = join(baseDir, fileName);
-			if (existsSync(fullPath)) {
-				return fullPath;
+		const baseDirs =
+			process.env.IPAD_MODE === '1'
+				? [join(this.appPath, 'preload'), join(__dirname, '../preload')]
+				: [join(__dirname, '../preload')];
+
+		for (const baseDir of baseDirs) {
+			for (const fileName of candidates) {
+				const fullPath = join(baseDir, fileName);
+				if (existsSync(fullPath)) {
+					return fullPath;
+				}
 			}
 		}
-		return join(baseDir, `${entry}.js`);
+		return join(baseDirs[0], `${entry}.js`);
 	}
 
 	createPeerConnectionHelperRenderer(): BrowserWindow {
 		let helperRendererWindow: BrowserWindow | null = null;
 
 		helperRendererWindow = new BrowserWindow({
-			show: is.dev, // show in dev only
+			show: is.dev && process.env.IPAD_MODE !== '1',
+			skipTaskbar: process.env.IPAD_MODE === '1',
 			webPreferences: {
 				preload: this.resolvePreloadScriptPath('helperRenderer'),
 				// contextIsolation: true,

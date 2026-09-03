@@ -18,6 +18,9 @@ import type { SendEncryptedMessagePayload } from '../../../../common/SendEncrypt
 import { Socket } from 'socket.io-client';
 
 type DisplaySize = { width: number; height: number };
+type SimplePeerWithRTCPeerConnection = {
+	_pc?: RTCPeerConnection;
+};
 
 export interface PartnerPeerUser {
 	username: string;
@@ -43,7 +46,7 @@ export default class PeerConnection {
 		deviceScreenWidth: 0,
 		deviceScreenHeight: 0,
 	} as Device;
-	signalsDataToCallUser: string[];
+	signalsDataToCallUser: unknown[];
 	isCallStarted: boolean;
 	onDeviceConnectedCallback: (device: Device) => void;
 	displayID: string;
@@ -55,11 +58,12 @@ export default class PeerConnection {
 		sharingSessionID: string,
 		user: LocalPeerUser,
 		port: string,
+		signalingHost?: string,
 	) {
 		this.sharingSessionID = sharingSessionID;
 		this.isSocketRoomLocked = false;
 		this.roomID = encodeURI(roomID);
-		this.socket = connectSocket(port, this.roomID);
+		this.socket = connectSocket(port, this.roomID, signalingHost);
 		this.user = user;
 		this.partner = NullUser;
 		this.desktopCapturerSourceID = '';
@@ -285,7 +289,7 @@ export default class PeerConnection {
 		if (this.isCallStarted) return;
 		this.isCallStarted = true;
 
-		this.signalsDataToCallUser.forEach((data: string) => {
+		this.signalsDataToCallUser.forEach((data) => {
 			this.sendEncryptedMessage({
 				type: 'CALL_USER',
 				payload: {
@@ -302,5 +306,51 @@ export default class PeerConnection {
 	toggleLockRoom(isConnected: boolean): void {
 		this.socket.emit('TOGGLE_LOCK_ROOM');
 		this.isSocketRoomLocked = isConnected;
+	}
+
+	/**
+	 * Apply degradation preference to maintain resolution over frame rate.
+	 * This should be called after the stream is attached to the peer.
+	 */
+	async applyDegradationPreference(): Promise<void> {
+		// Access the underlying RTCPeerConnection via simple-peer's internal _pc
+		const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
+		if (!pc || typeof pc.getSenders !== 'function') {
+			console.log(
+				'[PeerConnection] Leaving default degradation preference: sender is unavailable',
+			);
+			return;
+		}
+
+		try {
+			const senders = pc.getSenders();
+			const videoSender = senders.find(
+				(sender: RTCRtpSender) => sender.track?.kind === 'video',
+			);
+			if (
+				!videoSender ||
+				typeof videoSender.getParameters !== 'function' ||
+				typeof videoSender.setParameters !== 'function'
+			) {
+				console.log(
+					'[PeerConnection] Leaving default degradation preference: API is unavailable',
+				);
+				return;
+			}
+
+			const parameters = videoSender.getParameters() as RTCRtpSendParameters & {
+				degradationPreference?: string;
+			};
+			parameters.degradationPreference = 'maintain-resolution';
+			await videoSender.setParameters(parameters);
+			console.log(
+				'[PeerConnection] Applied maintain-resolution to the outbound video sender',
+			);
+		} catch (e) {
+			console.log(
+				'[PeerConnection] Leaving default degradation preference after setParameters failed:',
+				e,
+			);
+		}
 	}
 }

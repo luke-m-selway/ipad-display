@@ -1,0 +1,297 @@
+#!/bin/bash
+# Fixed USB iPad display lifecycle. State files carry a per-run token so a stale
+# PID can never authorize killing an unrelated process that later reuses it.
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+STATE_DIR="/tmp/ipad-display"
+VIRTUAL_DISPLAY_BIN="$STATE_DIR/ipad-4x3-display"
+VIRTUAL_DISPLAY_SOURCE="$REPO_DIR/scripts/ipad-4x3-display.m"
+HOST_PID_FILE="$STATE_DIR/host.pid"
+DISPLAY_PID_FILE="$STATE_DIR/virtual-display.pid"
+DISPLAY_ID_FILE="$STATE_DIR/virtual-display-id"
+HOST_READY_FILE="$STATE_DIR/host-ready"
+LOG_FILE="$STATE_DIR/ipad.log"
+HOST_ENTRY="$REPO_DIR/out/main/ipad-host.js"
+VIEWER_DIR="$REPO_DIR/out/ipad-viewer"
+FIXED_IP="192.168.2.1"
+FIXED_PORT="3131"
+HOST_READY_TIMEOUT_SECONDS=35
+
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+error() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" | tee -a "$LOG_FILE" >&2
+}
+
+startup_complete=true
+
+cleanup_failed_start() {
+  if [ "$startup_complete" = false ]; then
+    error "Startup failed; cleaning up stack-owned processes"
+    stop_stack
+  fi
+}
+
+read_pid_record() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  local pid token extra
+  read -r pid token extra < "$file" || return 1
+  [[ "$pid" =~ ^[0-9]+$ && -n "$token" && -z "${extra:-}" ]] || return 1
+  printf '%s\n%s\n' "$pid" "$token"
+}
+
+is_owned_process() {
+  local file="$1"
+  local expected_path="$2"
+  local record pid token command
+  record="$(read_pid_record "$file")" || return 1
+  pid="${record%%$'\n'*}"
+  token="${record#*$'\n'}"
+  kill -0 "$pid" 2>/dev/null || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command" == *"$expected_path"* && "$command" == *"--ipad-display-owner $token"* ]]
+}
+
+clear_stale_record() {
+  local file="$1"
+  local expected_path="$2"
+  if [ -f "$file" ] && ! is_owned_process "$file" "$expected_path"; then
+    log "Discarding stale or unowned PID record $file"
+    rm -f "$file"
+  fi
+}
+
+terminate_owned_process() {
+  local file="$1"
+  local expected_path="$2"
+  local label="$3"
+  local record pid token
+  record="$(read_pid_record "$file")" || {
+    rm -f "$file"
+    return
+  }
+  pid="${record%%$'\n'*}"
+  token="${record#*$'\n'}"
+
+  if ! is_owned_process "$file" "$expected_path"; then
+    log "Leaving unowned process from $file untouched"
+    rm -f "$file"
+    return
+  fi
+
+  log "Stopping owned $label process $pid"
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$file"
+      return
+    fi
+    sleep 1
+  done
+  if is_owned_process "$file" "$expected_path"; then
+    log "Force-stopping owned $label process $pid"
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$file"
+}
+
+stop_stack() {
+  terminate_owned_process "$HOST_PID_FILE" "$HOST_ENTRY" "host"
+  terminate_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN" "virtual display"
+  rm -f "$DISPLAY_ID_FILE"
+  rm -f "$HOST_READY_FILE"
+  log "iPad display stack stopped"
+}
+
+ensure_fixed_network() {
+  if ! ifconfig | grep -q "inet ${FIXED_IP} "; then
+    error "${FIXED_IP} is unavailable; connect the iPad USB/private network first"
+    return 1
+  fi
+  if lsof -nP -iTCP:"${FIXED_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+    error "${FIXED_PORT} is already occupied; iPad mode cannot share it on any interface"
+    return 1
+  fi
+}
+
+ensure_virtual_display_binary() {
+  if [ ! -f "$VIRTUAL_DISPLAY_SOURCE" ]; then
+    error "Virtual-display source is missing: $VIRTUAL_DISPLAY_SOURCE"
+    return 1
+  fi
+  if [ ! -x "$VIRTUAL_DISPLAY_BIN" ] || [ "$VIRTUAL_DISPLAY_SOURCE" -nt "$VIRTUAL_DISPLAY_BIN" ]; then
+    log "Building virtual-display helper"
+    clang -o "$VIRTUAL_DISPLAY_BIN" "$VIRTUAL_DISPLAY_SOURCE" -framework Cocoa -framework CoreGraphics
+  fi
+}
+
+ensure_host_build() {
+  local need_build=false
+  if [ ! -f "$HOST_ENTRY" ] || [ ! -f "$VIEWER_DIR/index.html" ] || \
+    [ ! -f "$VIEWER_DIR/vendor/socket.io.min.js" ] || [ ! -f "$VIEWER_DIR/vendor/simplepeer.min.js" ]; then
+    need_build=true
+  elif [ -n "$(find "$REPO_DIR/src" "$REPO_DIR/electron.vite.config.ts" "$REPO_DIR/package.json" -newer "$HOST_ENTRY" -print -quit)" ]; then
+    need_build=true
+  fi
+
+  if [ "$need_build" = true ]; then
+    log "Building iPad host assets"
+    (
+      cd "$REPO_DIR"
+      npm run buildClientViewer
+      npx electron-vite build
+    ) >> "$LOG_FILE" 2>&1
+  else
+    log "iPad host build is up to date"
+  fi
+}
+
+get_electron_runtime() {
+  local candidate="$REPO_DIR/node_modules/.bin/electron"
+  if [ ! -x "$candidate" ] || ! "$candidate" --version >/dev/null 2>&1; then
+    error "Electron runtime is incomplete; run npm install with Electron's postinstall script enabled"
+    return 1
+  fi
+  printf '%s\n' "$candidate"
+}
+
+use_existing_virtual_display_if_present() {
+  local pid
+  for pid in $(pgrep -x "$(basename "$VIRTUAL_DISPLAY_BIN")" 2>/dev/null || true); do
+    if ! is_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"; then
+      log "Using external virtual-display helper PID $pid without taking ownership"
+      if ! "$VIRTUAL_DISPLAY_BIN" --write-existing-id --state-file "$DISPLAY_ID_FILE" >> "$LOG_FILE" 2>&1; then
+        error "Could not identify the external virtual display by vendor/product/serial"
+        return 2
+      fi
+      return 0
+    fi
+  done
+  return 1
+}
+
+wait_for_display_identity() {
+  local pid="$1"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if [ -s "$DISPLAY_ID_FILE" ] && grep -Eq '^[0-9]+$' "$DISPLAY_ID_FILE"; then
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      error "Virtual-display helper exited before writing its display ID"
+      return 1
+    fi
+    sleep 1
+  done
+  error "Virtual-display helper did not write an exact display ID"
+  return 1
+}
+
+start_stack() {
+  clear_stale_record "$HOST_PID_FILE" "$HOST_ENTRY"
+  clear_stale_record "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"
+
+  if is_owned_process "$HOST_PID_FILE" "$HOST_ENTRY"; then
+    log "iPad display host is already running"
+    return 0
+  fi
+  if is_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"; then
+    log "Removing partial stack from an earlier invocation"
+    stop_stack
+  fi
+
+  ensure_fixed_network
+  ensure_virtual_display_binary
+  ensure_host_build
+
+  local electron_bin
+  electron_bin="$(get_electron_runtime)"
+
+  local owner_token
+  owner_token="$(uuidgen 2>/dev/null || date '+%s')-$$"
+  startup_complete=false
+  trap cleanup_failed_start EXIT INT TERM
+
+  rm -f "$DISPLAY_ID_FILE"
+  rm -f "$HOST_READY_FILE"
+  local existing_display_status=0
+  use_existing_virtual_display_if_present || existing_display_status=$?
+  if [ "$existing_display_status" = 1 ]; then
+    log "Starting virtual display"
+    "$VIRTUAL_DISPLAY_BIN" --state-file "$DISPLAY_ID_FILE" --ipad-display-owner "$owner_token" >> "$LOG_FILE" 2>&1 &
+    local display_pid=$!
+    printf '%s %s\n' "$display_pid" "$owner_token" > "$DISPLAY_PID_FILE"
+    wait_for_display_identity "$display_pid"
+  elif [ "$existing_display_status" != 0 ]; then
+    return "$existing_display_status"
+  fi
+
+  log "Starting iPad host"
+  IPAD_MODE=1 IPAD_BIND_IP="$FIXED_IP" IPAD_FIXED_ROOM_ID="ipad-main" \
+    IPAD_DISPLAY_ID_FILE="$DISPLAY_ID_FILE" IPAD_READY_FILE="$HOST_READY_FILE" \
+    IPAD_OWNER_TOKEN="$owner_token" \
+    "$electron_bin" "$HOST_ENTRY" --ipad-display-owner "$owner_token" >> "$LOG_FILE" 2>&1 &
+  local host_pid=$!
+  printf '%s %s\n' "$host_pid" "$owner_token" > "$HOST_PID_FILE"
+
+  local server_was_listening=false
+  for _ in $(seq 1 "$HOST_READY_TIMEOUT_SECONDS"); do
+    if curl --fail --silent --connect-timeout 1 "http://${FIXED_IP}:${FIXED_PORT}/" >/dev/null; then
+      server_was_listening=true
+    fi
+    if is_owned_process "$HOST_PID_FILE" "$HOST_ENTRY" && \
+      [ -f "$HOST_READY_FILE" ] && grep -Fxq "$owner_token" "$HOST_READY_FILE" && \
+      [ "$server_was_listening" = true ]; then
+      startup_complete=true
+      trap - EXIT INT TERM
+      log "Ready: http://${FIXED_IP}:${FIXED_PORT}/"
+      return 0
+    fi
+    if ! kill -0 "$host_pid" 2>/dev/null; then
+      if [ "$server_was_listening" = true ]; then
+        error "iPad host exited before the virtual display became capture-ready; see $LOG_FILE"
+        return 1
+      fi
+      error "iPad host exited; see $LOG_FILE"
+      return 1
+    fi
+    sleep 1
+  done
+
+  if [ "$server_was_listening" = true ]; then
+    error "iPad signaling server is listening, but the virtual display did not become capture-ready within ${HOST_READY_TIMEOUT_SECONDS}s; see $LOG_FILE"
+  else
+    error "iPad host did not listen on ${FIXED_IP}:${FIXED_PORT}; see $LOG_FILE"
+  fi
+  return 1
+}
+
+status_stack() {
+  clear_stale_record "$HOST_PID_FILE" "$HOST_ENTRY"
+  clear_stale_record "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"
+  if is_owned_process "$HOST_PID_FILE" "$HOST_ENTRY"; then
+    echo "iPad host is running at http://${FIXED_IP}:${FIXED_PORT}/"
+  else
+    echo "iPad host is not running"
+  fi
+  if is_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"; then
+    echo "Virtual display is owned by this stack"
+  fi
+}
+
+case "${1:-start}" in
+  start) start_stack ;;
+  stop) stop_stack ;;
+  status) status_stack ;;
+  *)
+    echo "Usage: ipad [start|stop|status]"
+    exit 1
+    ;;
+esac

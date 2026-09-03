@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="iPad Display">
+    <meta name="theme-color" content="#000000">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <title>iPad Display</title>
+    <style>
+      html, body, video { width: 100%; height: 100%; margin: 0; background: #000; }
+      video { display: block; object-fit: contain; }
+      #status { position: fixed; inset: auto 12px 12px; color: #777; font: 12px -apple-system, sans-serif; }
+      #status[hidden] { display: none; }
+      #fullscreen-hint { position: fixed; inset: auto 12px 12px; color: #bbb; font: 12px -apple-system, sans-serif; }
+      #fullscreen-hint[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <video id="video" autoplay muted playsinline></video>
+    <div id="status">Connecting…</div>
+    <div id="fullscreen-hint" hidden>Tap for fullscreen</div>
+    <script src="/vendor/socket.io.min.js"></script>
+    <script src="/vendor/simplepeer.min.js"></script>
+    <script>
+      (() => {
+        const ROOM_ID = 'ipad-main';
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        const fullscreenHint = document.getElementById('fullscreen-hint');
+        const SimplePeer = window['SimplePeer'];
+        const connectSocket = window['io'];
+        const user = {
+          id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+          username: `ipad-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        };
+
+        let partner = null;
+        let deviceDetailsSent = false;
+        let isStreaming = false;
+        let lastFullscreenGestureAt = 0;
+
+        const setStatus = (text, isStreaming = false) => {
+          status.textContent = text;
+          status.hidden = isStreaming;
+        };
+
+        const isFullscreen = () =>
+          document.fullscreenElement || document.webkitFullscreenElement;
+
+        const updateFullscreenHint = () => {
+          fullscreenHint.hidden = !isStreaming || Boolean(isFullscreen());
+        };
+
+        const requestFullscreenFromGesture = () => {
+          if (isFullscreen()) return;
+
+          if (typeof document.documentElement.requestFullscreen === 'function') {
+            void document.documentElement.requestFullscreen().catch(() => {
+              // iPadOS only permits this call from the gesture that triggered it.
+            });
+          } else if (typeof video.webkitEnterFullscreen === 'function') {
+            video.webkitEnterFullscreen();
+          }
+        };
+
+        const enterFullscreenOnTap = () => {
+          if (!isStreaming || isFullscreen()) return;
+
+          // Safari emits both pointerup and touchend for one finger gesture.
+          // Let the first event retain user activation, then ignore its twin.
+          const now = Date.now();
+          if (now - lastFullscreenGestureAt < 750) return;
+          lastFullscreenGestureAt = now;
+          requestFullscreenFromGesture();
+        };
+
+        // Fullscreen requires a real user activation on iPadOS. Keep this outside
+        // stream setup so requesting it never recreates the PeerConnection.
+        document.addEventListener('pointerup', enterFullscreenOnTap);
+        document.addEventListener('touchend', enterFullscreenOnTap);
+        document.addEventListener('fullscreenchange', updateFullscreenHint);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenHint);
+
+        // This is the stock Deskreen viewer contract: a non-initiating
+        // simple-peer receives CALL_USER signals and returns CALL_ACCEPTED signals.
+        if (!SimplePeer || !connectSocket) {
+          setStatus('Viewer assets failed to load');
+          return;
+        }
+        const peer = new SimplePeer({ initiator: false, config: { iceServers: [] } });
+        const socket = connectSocket(window.location.origin, {
+          query: { roomId: ROOM_ID },
+          forceNew: true,
+        });
+
+        const sendMessage = (type, payload) => {
+          if (!partner) return;
+          socket.emit('MESSAGE', {
+            type,
+            payload: { ...payload, sender: user.id, username: user.username },
+          });
+        };
+
+        peer.on('signal', (signalData) => {
+          sendMessage('CALL_ACCEPTED', { signalData });
+        });
+
+        peer.on('stream', (stream) => {
+          video.srcObject = stream;
+          void video.play().catch(() => {
+            console.debug('[iPad Viewer] Safari deferred autoplay');
+          });
+          isStreaming = true;
+          setStatus('Streaming', true);
+          updateFullscreenHint();
+        });
+
+        peer.on('error', (error) => {
+          console.error('[iPad Viewer] simple-peer error', error);
+          setStatus('WebRTC connection failed');
+        });
+
+        socket.on('connect', () => {
+          setStatus('Joining display…');
+          // Darkwire installs its room handlers shortly after Socket.IO connects.
+          // Match the stock viewer's GET_MY_IP -> USER_ENTER ordering.
+          window.setTimeout(() => {
+            socket.emit('GET_MY_IP', () => {
+              socket.emit('USER_ENTER', { username: user.username, ip: '' });
+            });
+          }, 500);
+        });
+
+        socket.on('USER_ENTER', ({ users }) => {
+          const host = users.find((candidate) => candidate.username !== user.username);
+          if (!host || deviceDetailsSent) return;
+
+          partner = host;
+          deviceDetailsSent = true;
+          sendMessage('DEVICE_DETAILS', {
+            os: 'iPadOS',
+            deviceType: 'tablet',
+            browser: navigator.userAgent,
+            deviceScreenWidth: window.screen.width,
+            deviceScreenHeight: window.screen.height,
+          });
+          setStatus('Waiting for host…');
+        });
+
+        socket.on('MESSAGE', (message) => {
+          if (!message || !message.type) return;
+          if (message.type === 'CALL_USER') {
+            peer.signal(message.payload.signalData);
+          } else if (message.type === 'ALLOWED_TO_CONNECT') {
+            setStatus('Starting stream…');
+          } else if (message.type === 'DENY_TO_CONNECT' || message.type === 'DISCONNECT_BY_HOST_MACHINE_USER') {
+            setStatus('Connection closed');
+          }
+        });
+
+        socket.on('NOT_ALLOWED', () => setStatus('Display unavailable'));
+        socket.on('disconnect', () => setStatus('Disconnected'));
+      })();
+    </script>
+  </body>
+</html>

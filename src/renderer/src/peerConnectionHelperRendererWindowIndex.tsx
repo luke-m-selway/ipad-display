@@ -33,6 +33,27 @@ const loadDevelopmentText = (): void => {
 export function handleIpcRenderer(): void {
 	window.electron.ipcRenderer.on('start-peer-connection', () => {
 		let peerConnection: PeerConnection | undefined;
+		let pendingDesktopCapturerSourceID: string | undefined;
+		let shouldCallPeer = false;
+		let shouldSendConnectionApproval = false;
+
+		const applyPendingSessionState = (): void => {
+			if (!peerConnection) return;
+			if (pendingDesktopCapturerSourceID) {
+				void peerConnection.setDesktopCapturerSourceID(
+					pendingDesktopCapturerSourceID,
+				);
+				pendingDesktopCapturerSourceID = undefined;
+			}
+			if (shouldSendConnectionApproval) {
+				peerConnection.sendUserAllowedToConnect();
+				shouldSendConnectionApproval = false;
+			}
+			if (shouldCallPeer) {
+				peerConnection.callPeer();
+				shouldCallPeer = false;
+			}
+		};
 
 		window.electron.ipcRenderer.on(
 			'create-peer-connection-with-data',
@@ -43,19 +64,22 @@ export function handleIpcRenderer(): void {
 					peerConnection = undefined;
 				}
 
-				const port = await window.electron.ipcRenderer.invoke(
-					IpcEvents.GetPort,
-				);
+				const [port, signalingHost] = await Promise.all([
+					window.electron.ipcRenderer.invoke(IpcEvents.GetPort),
+					window.electron.ipcRenderer.invoke(IpcEvents.GetSignalingHost),
+				]);
 				peerConnection = new PeerConnection(
 					data.roomID,
 					data.sharingSessionID,
 					data.user,
 					port,
+					signalingHost,
 				);
 
 				peerConnection.setOnDeviceConnectedCallback((deviceData) => {
 					window.electron.ipcRenderer.send('peer-connected', deviceData);
 				});
+				applyPendingSessionState();
 			},
 		);
 
@@ -63,7 +87,9 @@ export function handleIpcRenderer(): void {
 			'set-desktop-capturer-source-id',
 			(_, id) => {
 				if (peerConnection) {
-					peerConnection.setDesktopCapturerSourceID(id);
+					void peerConnection.setDesktopCapturerSourceID(id);
+				} else {
+					pendingDesktopCapturerSourceID = id;
 				}
 			},
 		);
@@ -71,6 +97,8 @@ export function handleIpcRenderer(): void {
 		window.electron.ipcRenderer.on('call-peer', () => {
 			if (peerConnection) {
 				peerConnection.callPeer();
+			} else {
+				shouldCallPeer = true;
 			}
 		});
 
@@ -92,6 +120,8 @@ export function handleIpcRenderer(): void {
 		window.electron.ipcRenderer.on('send-user-allowed-to-connect', () => {
 			if (peerConnection) {
 				peerConnection.sendUserAllowedToConnect();
+			} else {
+				shouldSendConnectionApproval = true;
 			}
 		});
 
