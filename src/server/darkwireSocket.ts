@@ -11,6 +11,8 @@ import getStore from './store';
 import socketIOServerStore from './store/socketIOServerStore';
 
 const LOCALHOST_SOCKET_IP = '127.0.0.1';
+const IPAD_HOST_SOCKET_IP = '192.168.2.1';
+const isIpadMode = process.env.IPAD_MODE === '1';
 
 interface SocketOPTS {
 	roomId: string;
@@ -19,8 +21,16 @@ interface SocketOPTS {
 	roomIdOriginal: string;
 }
 
-function isLocalhostSocket(socket: Io.Socket) {
+function isHostOwnerSocket(socket: Io.Socket) {
 	const remoteAddress = socket.request.socket.remoteAddress ?? '';
+	if (isIpadMode) {
+		// The helper reaches the private-bound server through the Mac's USB IP;
+		// the iPad remains a distinct peer at 192.168.2.2.
+		return (
+			remoteAddress === IPAD_HOST_SOCKET_IP ||
+			remoteAddress === `::ffff:${IPAD_HOST_SOCKET_IP}`
+		);
+	}
 	return remoteAddress.includes(LOCALHOST_SOCKET_IP);
 }
 
@@ -90,7 +100,7 @@ export default class Socket implements SocketOPTS {
 		});
 
 		this.socket.on('GET_IP_BY_SOCKET_ID', (socketID, acknowledgeFunction) => {
-			if (!isLocalhostSocket(this.socket)) {
+			if (!isHostOwnerSocket(this.socket)) {
 				return;
 			}
 			acknowledgeFunction(socketsIPService.getSocketIPByID(socketID));
@@ -140,7 +150,7 @@ export default class Socket implements SocketOPTS {
 				if (userFound) return;
 			}
 
-			const isOwnerSocket = isLocalhostSocket(this.socket);
+			const isOwnerSocket = isHostOwnerSocket(this.socket);
 			if (!isOwnerSocket) {
 				const connectedViewers = (room.users || []).filter((user) => {
 					return !user.isOwner;
