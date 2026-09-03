@@ -4,8 +4,12 @@
 #include <stdlib.h>
 
 static const unsigned int kVirtualDisplaySerial = 0x4321;
-static const unsigned int kVirtualDisplayProductID = 0x1235;
+// 0x1236 intentionally supersedes 0x1235: Ventura persisted the latter's
+// 1440x1080 preference. Keep this replacement identity stable across runs.
+static const unsigned int kVirtualDisplayProductID = 0x1236;
 static const unsigned int kVirtualDisplayVendorID = 0x3456;
+static const size_t kRequiredDisplayWidth = 1600;
+static const size_t kRequiredDisplayHeight = 1200;
 
 @class CGVirtualDisplayDescriptor;
 
@@ -135,9 +139,11 @@ int main(int argc, const char * argv[]) {
             return 1;
         }
 
+        // CGVirtualDisplay selects the initial desktop mode from this order.
+        // Keep the alternate modes available, but make the required mode first.
         NSArray *modes = @[
-            [[CGVirtualDisplayMode alloc] initWithWidth:2048 height:1536 refreshRate:60],
             [[CGVirtualDisplayMode alloc] initWithWidth:1600 height:1200 refreshRate:60],
+            [[CGVirtualDisplayMode alloc] initWithWidth:2048 height:1536 refreshRate:60],
             [[CGVirtualDisplayMode alloc] initWithWidth:1440 height:1080 refreshRate:60],
             [[CGVirtualDisplayMode alloc] initWithWidth:1280 height:960 refreshRate:60]
         ];
@@ -154,7 +160,10 @@ int main(int argc, const char * argv[]) {
             return 1;
         }
 
-        NSLog(@"iPad 4:3 virtual display running — display ID %u", display.displayID);
+        NSLog(@"iPad 4:3 virtual display requested at %zux%zu — display ID %u",
+              kRequiredDisplayWidth,
+              kRequiredDisplayHeight,
+              display.displayID);
         [[NSRunLoop currentRunLoop] run];
     }
     return 0;
