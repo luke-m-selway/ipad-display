@@ -26,6 +26,13 @@ type SimplePeerWithRTCPeerConnection = {
 };
 type WebRTCStats = RTCStats & Record<string, unknown>;
 
+function reportIpadDiagnostic(
+	kind: 'Capture' | 'Sender',
+	values: Record<string, unknown>,
+): void {
+	window.electron.ipcRenderer.send(IpcEvents.IpadDiagnostic, { kind, values });
+}
+
 function getVideoOutboundStats(
 	report: RTCStatsReport,
 ): WebRTCStats | undefined {
@@ -406,7 +413,9 @@ export default class PeerConnection {
 		const secondReport = await pc.getStats();
 		const second = getVideoOutboundStats(secondReport);
 		if (!second) {
-			console.log('[iPad Sender] No outbound video statistics are available');
+			reportIpadDiagnostic('Sender', {
+				status: 'No outbound video statistics are available',
+			});
 			return;
 		}
 
@@ -430,7 +439,7 @@ export default class PeerConnection {
 			.find((candidate) => candidate.track?.kind === 'video');
 		const parameters = sender?.getParameters();
 
-		console.log('[iPad Sender] Bounded diagnostics:', {
+		reportIpadDiagnostic('Sender', {
 			frameWidth: second.frameWidth,
 			frameHeight: second.frameHeight,
 			framesPerSecond: second.framesPerSecond,
@@ -469,18 +478,17 @@ export default class PeerConnection {
 		try {
 			track.contentHint = 'text';
 			if (track.contentHint !== 'text') track.contentHint = 'detail';
-		} catch (error) {
-			console.warn(
-				'[iPad Capture] Chromium rejected screen content hints',
-				error,
-			);
+		} catch {
+			// The readback below records a runtime that does not accept either hint.
 		}
 
 		const settings = track.getSettings() as MediaTrackSettings & {
 			resizeMode?: string;
 		};
 		const capabilities = track.getCapabilities?.();
-		console.log('[iPad Capture] Video track:', {
+		reportIpadDiagnostic('Capture', {
+			requestedWidth: this.sourceCaptureSize.width,
+			requestedHeight: this.sourceCaptureSize.height,
 			width: settings.width,
 			height: settings.height,
 			frameRate: settings.frameRate,
