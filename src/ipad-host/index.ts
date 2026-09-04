@@ -17,8 +17,8 @@ const IPAD_FIXED_ROOM_ID = 'ipad-main';
 const IPAD_DISPLAY_WIDTH = 1600;
 const IPAD_DISPLAY_HEIGHT = 1200;
 // Keep the 1600x1200 desktop geometry while capturing enough backing pixels for text.
-const IPAD_CAPTURE_WIDTH = 2048;
-const IPAD_CAPTURE_HEIGHT = 1536;
+const IPAD_CAPTURE_WIDTH = 2304;
+const IPAD_CAPTURE_HEIGHT = 1728;
 const displayIDStateFile =
 	process.env.IPAD_DISPLAY_ID_FILE ?? '/tmp/ipad-display/virtual-display-id';
 const readyStateFile =
