@@ -5,6 +5,7 @@ import NullUser from './NullUser';
 export default function handleSelfDestroy(
 	peerConnection: PeerConnection,
 ): void {
+	peerConnection.stopStallDiagnostics();
 	peerConnection.partner = NullUser;
 	window.electron.ipcRenderer.invoke(
 		IpcEvents.DisconnectDeviceById,

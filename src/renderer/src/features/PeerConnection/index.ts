@@ -56,6 +56,7 @@ export default class PeerConnection {
 	sourceDisplaySize: DisplaySize | undefined;
 	sourceCaptureSize: DisplaySize | undefined;
 	beforeunloadHandler: (() => void) | null = null;
+	stallDiagnosticsCleanup: (() => void) | null = null;
 
 	constructor(
 		roomID: string,
@@ -319,6 +320,11 @@ export default class PeerConnection {
 
 	createPeer(): Promise<void> {
 		return handleCreatePeer(this);
+	}
+
+	stopStallDiagnostics(): void {
+		this.stallDiagnosticsCleanup?.();
+		this.stallDiagnosticsCleanup = null;
 	}
 
 	toggleLockRoom(isConnected: boolean): void {

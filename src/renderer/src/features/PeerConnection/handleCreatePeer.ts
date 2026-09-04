@@ -1,6 +1,10 @@
 // import SimplePeer from 'simple-peer';
 import createDesktopCapturerStream from './createDesktopCapturerStream';
 import handlePeerOnData from './handlePeerOnData';
+import {
+	isIpadStallDiagnosticsEnabled,
+	startIpadStallDiagnostics,
+} from './ipadStallDiagnostics';
 import NullSimplePeer from './NullSimplePeer';
 // import simplePeerHandleSdpTransform from './simplePeerHandleSdpTransform';
 
@@ -8,6 +12,7 @@ export default function handleCreatePeer(
 	peerConnection: PeerConnection,
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
+		peerConnection.stopStallDiagnostics();
 		// cleanup existing peer before creating new one
 		if (peerConnection.peer !== NullSimplePeer) {
 			try {
@@ -83,6 +88,10 @@ export default function handleCreatePeer(
 					console.error('peerConnection peer error', e);
 					peerConnection.selfDestroy();
 				});
+				if (isIpadStallDiagnosticsEnabled()) {
+					peerConnection.stallDiagnosticsCleanup =
+						startIpadStallDiagnostics(peerConnection);
+				}
 				resolve(undefined);
 			})
 			.catch((e) => {
