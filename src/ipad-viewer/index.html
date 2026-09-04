@@ -45,6 +45,8 @@
         let lastFullscreenGestureAt = 0;
         let hasConnectedBefore = false;
         let joinAttempt = 0;
+        let peerRecoveryInProgress = false;
+        let pageIsTearingDown = false;
 
         const setStatus = (text, isStreaming = false) => {
           status.textContent = text;
@@ -107,6 +109,43 @@
           });
         };
 
+        const clearViewerSessionState = () => {
+          partner = null;
+          deviceDetailsSent = false;
+          isStreaming = false;
+          video.srcObject = null;
+          joinAttempt += 1;
+          updateFullscreenHint();
+        };
+
+        const disposePeer = () => {
+          if (!peer) return;
+          const stalePeer = peer;
+          // Make any synchronous close from destroy stale before it can request recovery.
+          peer = null;
+          stalePeer.removeAllListeners();
+          stalePeer.destroy();
+        };
+
+        const recoverFromUnexpectedPeerTermination = (terminatedPeer, reason) => {
+          if (
+            pageIsTearingDown ||
+            peerRecoveryInProgress ||
+            peer !== terminatedPeer
+          ) {
+            return;
+          }
+          peerRecoveryInProgress = true;
+          clearViewerSessionState();
+          disposePeer();
+          setStatus(`Reconnecting display (${reason})…`);
+
+          // Reconnecting the socket gives Darkwire a new room membership. The
+          // existing connect handler is the only path that creates and joins a peer.
+          socket.disconnect();
+          socket.connect();
+        };
+
         const createPeer = () => {
           const nextPeer = new SimplePeer({ initiator: false, config: { iceServers: [] } });
           peer = nextPeer;
@@ -130,20 +169,17 @@
           nextPeer.on('error', (error) => {
             if (peer !== nextPeer) return;
             console.error('[iPad Viewer] simple-peer error', error);
-            setStatus('WebRTC connection failed');
+            recoverFromUnexpectedPeerTermination(nextPeer, 'WebRTC error');
+          });
+
+          nextPeer.on('close', () => {
+            recoverFromUnexpectedPeerTermination(nextPeer, 'WebRTC closed');
           });
         };
 
         const resetForSignalingReconnect = () => {
-          partner = null;
-          deviceDetailsSent = false;
-          isStreaming = false;
-          video.srcObject = null;
-          updateFullscreenHint();
-          if (peer) {
-            peer.removeAllListeners();
-            peer.destroy();
-          }
+          clearViewerSessionState();
+          disposePeer();
           createPeer();
         };
 
@@ -182,6 +218,7 @@
             deviceScreenWidth: window.screen.width,
             deviceScreenHeight: window.screen.height,
           });
+          peerRecoveryInProgress = false;
           setStatus('Waiting for host…');
         });
 
@@ -200,6 +237,10 @@
         socket.on('disconnect', () => {
           joinAttempt += 1;
           setStatus('Disconnected');
+        });
+
+        window.addEventListener('beforeunload', () => {
+          pageIsTearingDown = true;
         });
       })();
     </script>

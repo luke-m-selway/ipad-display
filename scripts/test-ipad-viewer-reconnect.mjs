@@ -12,19 +12,30 @@ if (!viewerScript) {
 	throw new Error('Could not find the iPad viewer script');
 }
 
-test('iPad viewer recreates its answerer and DEVICE_DETAILS handshake on reconnect', () => {
+function createViewerHarness() {
 	const socketHandlers = new Map();
 	const emittedMessages = [];
 	const scheduledCallbacks = [];
 	const peers = [];
+	const windowHandlers = new Map();
 	const socket = {
 		connected: true,
+		disconnectCount: 0,
+		connectCount: 0,
 		on(event, handler) {
 			socketHandlers.set(event, handler);
 		},
 		emit(event, payload) {
 			emittedMessages.push({ event, payload });
 			if (event === 'GET_MY_IP') payload();
+		},
+		disconnect() {
+			this.disconnectCount += 1;
+			this.connected = false;
+		},
+		connect() {
+			this.connectCount += 1;
+			this.connected = true;
 		},
 	};
 
@@ -45,6 +56,10 @@ test('iPad viewer recreates its answerer and DEVICE_DETAILS handshake on reconne
 
 		destroy() {
 			this.destroyed = true;
+		}
+
+		emit(event, ...args) {
+			this.handlers.get(event)?.(...args);
 		}
 
 		signal() {
@@ -78,6 +93,9 @@ test('iPad viewer recreates its answerer and DEVICE_DETAILS handshake on reconne
 		setTimeout(callback) {
 			scheduledCallbacks.push(callback);
 		},
+		addEventListener(event, handler) {
+			windowHandlers.set(event, handler);
+		},
 	};
 
 	vm.runInNewContext(viewerScript, {
@@ -95,7 +113,6 @@ test('iPad viewer recreates its answerer and DEVICE_DETAILS handshake on reconne
 		window,
 	});
 
-	const host = { username: 'iPad-Host' };
 	const flushJoinAttempt = () => {
 		const callback = scheduledCallbacks.shift();
 		assert.ok(callback, 'expected a scheduled join attempt');
@@ -107,16 +124,71 @@ test('iPad viewer recreates its answerer and DEVICE_DETAILS handshake on reconne
 				event === 'MESSAGE' && payload.type === 'DEVICE_DETAILS',
 		).length;
 
-	socketHandlers.get('connect')();
-	flushJoinAttempt();
-	socketHandlers.get('USER_ENTER')({ users: [host] });
-	assert.equal(peers.length, 1);
-	assert.equal(countDeviceDetails(), 1);
+	return {
+		socket,
+		socketHandlers,
+		peers,
+		windowHandlers,
+		flushJoinAttempt,
+		countDeviceDetails,
+	};
+}
 
-	socketHandlers.get('connect')();
-	flushJoinAttempt();
-	socketHandlers.get('USER_ENTER')({ users: [host] });
+const host = { username: 'iPad-Host' };
+
+function connectAndJoin(harness) {
+	harness.socketHandlers.get('connect')();
+	harness.flushJoinAttempt();
+	harness.socketHandlers.get('USER_ENTER')({ users: [host] });
+}
+
+test('iPad viewer recreates its answerer and DEVICE_DETAILS handshake on reconnect', () => {
+	const harness = createViewerHarness();
+
+	connectAndJoin(harness);
+	const { peers } = harness;
+	assert.equal(peers.length, 1);
+	assert.equal(harness.countDeviceDetails(), 1);
+
+	connectAndJoin(harness);
 	assert.equal(peers.length, 2);
 	assert.equal(peers[0].destroyed, true);
-	assert.equal(countDeviceDetails(), 2);
+	assert.equal(harness.countDeviceDetails(), 2);
+	assert.equal(harness.socket.disconnectCount, 0);
+	assert.equal(harness.socket.connectCount, 0);
+});
+
+test('iPad viewer recovers once from an unexpected peer close', () => {
+	const harness = createViewerHarness();
+	connectAndJoin(harness);
+
+	const oldPeer = harness.peers[0];
+	oldPeer.emit('close');
+	oldPeer.emit('close');
+
+	assert.equal(oldPeer.destroyed, true);
+	assert.equal(harness.socket.disconnectCount, 1);
+	assert.equal(harness.socket.connectCount, 1);
+	assert.equal(harness.peers.length, 1);
+
+	connectAndJoin(harness);
+	assert.equal(harness.peers.length, 2);
+	assert.equal(harness.countDeviceDetails(), 2);
+});
+
+test('iPad viewer recovers once from an unexpected peer error', () => {
+	const harness = createViewerHarness();
+	connectAndJoin(harness);
+
+	const oldPeer = harness.peers[0];
+	oldPeer.emit('error', new Error('transport failed'));
+	oldPeer.emit('close');
+
+	assert.equal(oldPeer.destroyed, true);
+	assert.equal(harness.socket.disconnectCount, 1);
+	assert.equal(harness.socket.connectCount, 1);
+
+	connectAndJoin(harness);
+	assert.equal(harness.peers.length, 2);
+	assert.equal(harness.countDeviceDetails(), 2);
 });
