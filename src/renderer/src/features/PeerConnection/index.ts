@@ -55,6 +55,25 @@ function isVp8Codec(codec: RTCRtpCodec): boolean {
 	return codec.mimeType.toLowerCase() === 'video/vp8';
 }
 
+function mergeCodecCapabilities(
+	...codecLists: Array<RTCRtpCodec[] | undefined>
+): RTCRtpCodec[] {
+	const seen = new Set<string>();
+	return codecLists
+		.flatMap((codecs) => codecs ?? [])
+		.filter((codec) => {
+			const identity = [
+				codec.mimeType.toLowerCase(),
+				codec.clockRate,
+				codec.channels,
+				codec.sdpFmtpLine,
+			].join('|');
+			if (seen.has(identity)) return false;
+			seen.add(identity);
+			return true;
+		});
+}
+
 function getVideoOutboundStats(
 	report: RTCStatsReport,
 ): WebRTCStats | undefined {
@@ -427,87 +446,99 @@ export default class PeerConnection {
 	applyIpadCodecPreference(): void {
 		if (!this.sourceCaptureSize) return;
 
-		const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
-		let senderCapabilities: RTCRtpCapabilities | null = null;
-		let receiverCapabilities: RTCRtpCapabilities | null = null;
-		let capabilityError: string | undefined;
-		try {
-			senderCapabilities =
-				typeof RTCRtpSender === 'undefined'
-					? null
-					: RTCRtpSender.getCapabilities('video');
-			receiverCapabilities =
-				typeof RTCRtpReceiver === 'undefined'
-					? null
-					: RTCRtpReceiver.getCapabilities('video');
-		} catch (error) {
-			capabilityError = String(error);
-		}
-		const transceiver = pc
-			?.getTransceivers?.()
-			.find((candidate) => candidate.sender.track?.kind === 'video');
-		const h264Codecs = senderCapabilities?.codecs.filter(isH264Codec) ?? [];
 		const values: Record<string, unknown> = {
-			electronVersion: process.versions.electron,
-			chromiumVersion: process.versions.chrome,
-			setCodecPreferencesAvailable:
-				typeof transceiver?.setCodecPreferences === 'function',
-			videoTransceiverExistsImmediatelyAfterAddStream: Boolean(transceiver),
-			signalingState: pc?.signalingState,
-			senderCapabilities: describeCodecs(senderCapabilities?.codecs),
-			receiverCapabilities: describeCodecs(receiverCapabilities?.codecs),
-			h264SenderCapabilities: describeCodecs(h264Codecs),
-			h264ReceiverCapabilities: describeCodecs(
-				receiverCapabilities?.codecs.filter(isH264Codec),
-			),
-			vp8SenderCapabilities: describeCodecs(
-				senderCapabilities?.codecs.filter(isVp8Codec),
-			),
-			vp8ReceiverCapabilities: describeCodecs(
-				receiverCapabilities?.codecs.filter(isVp8Codec),
-			),
-			capabilityError,
+			status: 'error',
+			setCodecPreferencesAvailable: false,
+			videoTransceiverExistsImmediatelyAfterAddStream: false,
+			signalingState: undefined,
+			h264SenderCapabilities: [],
+			h264ReceiverCapabilities: [],
 		};
-
-		if (!pc || !transceiver) {
-			values.status = 'default-negotiation';
-			values.reason = 'video transceiver is unavailable after addStream';
-			reportIpadDiagnostic('Codec', values);
-			return;
-		}
-		if (typeof transceiver.setCodecPreferences !== 'function') {
-			values.status = 'default-negotiation';
-			values.reason = 'RTCRtpTransceiver.setCodecPreferences is unavailable';
-			reportIpadDiagnostic('Codec', values);
-			return;
-		}
-		if (!senderCapabilities) {
-			values.status = 'default-negotiation';
-			values.reason = 'RTCRtpSender video capabilities are unavailable';
-			reportIpadDiagnostic('Codec', values);
-			return;
-		}
-		if (h264Codecs.length === 0) {
-			values.status = 'default-negotiation';
-			values.reason = 'no H264 encoder capability is available';
-			reportIpadDiagnostic('Codec', values);
-			return;
-		}
-
-		const codecPreference = [
-			...h264Codecs,
-			...senderCapabilities.codecs.filter((codec) => !isH264Codec(codec)),
-		];
-
 		try {
+			const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
+			let senderCapabilities: RTCRtpCapabilities | null = null;
+			let receiverCapabilities: RTCRtpCapabilities | null = null;
+			let capabilityError: string | undefined;
+			try {
+				senderCapabilities =
+					typeof RTCRtpSender === 'undefined'
+						? null
+						: RTCRtpSender.getCapabilities('video');
+				receiverCapabilities =
+					typeof RTCRtpReceiver === 'undefined'
+						? null
+						: RTCRtpReceiver.getCapabilities('video');
+			} catch (error) {
+				capabilityError = String(error);
+			}
+			const transceiver = pc
+				?.getTransceivers?.()
+				.find((candidate) => candidate.sender.track?.kind === 'video');
+			const h264SenderCodecs =
+				senderCapabilities?.codecs.filter(isH264Codec) ?? [];
+			const h264ReceiverCodecs =
+				receiverCapabilities?.codecs.filter(isH264Codec) ?? [];
+			const supportedCodecs = mergeCodecCapabilities(
+				receiverCapabilities?.codecs,
+				senderCapabilities?.codecs,
+			);
+			const h264Codecs = supportedCodecs.filter(isH264Codec);
+			Object.assign(values, {
+				setCodecPreferencesAvailable:
+					typeof transceiver?.setCodecPreferences === 'function',
+				videoTransceiverExistsImmediatelyAfterAddStream: Boolean(transceiver),
+				signalingState: pc?.signalingState,
+				senderCapabilities: describeCodecs(senderCapabilities?.codecs),
+				receiverCapabilities: describeCodecs(receiverCapabilities?.codecs),
+				h264SenderCapabilities: describeCodecs(h264SenderCodecs),
+				h264ReceiverCapabilities: describeCodecs(h264ReceiverCodecs),
+				vp8SenderCapabilities: describeCodecs(
+					senderCapabilities?.codecs.filter(isVp8Codec),
+				),
+				vp8ReceiverCapabilities: describeCodecs(
+					receiverCapabilities?.codecs.filter(isVp8Codec),
+				),
+				capabilityError,
+			});
+
+			if (!pc || !transceiver) {
+				values.status = 'default-negotiation';
+				values.reason = 'video transceiver is unavailable after addStream';
+				return;
+			}
+			if (typeof transceiver.setCodecPreferences !== 'function') {
+				values.status = 'default-negotiation';
+				values.reason = 'RTCRtpTransceiver.setCodecPreferences is unavailable';
+				return;
+			}
+			if (supportedCodecs.length === 0) {
+				values.status = 'default-negotiation';
+				values.reason = 'video codec capabilities are unavailable';
+				return;
+			}
+			if (h264Codecs.length === 0) {
+				values.status = 'default-negotiation';
+				values.reason = 'no H264 codec capability is available';
+				return;
+			}
+
+			const codecPreference = [
+				...h264Codecs,
+				...supportedCodecs.filter((codec) => !isH264Codec(codec)),
+			];
 			transceiver.setCodecPreferences(codecPreference);
 			values.status = 'applied';
 			values.appliedPreference = describeCodecs(codecPreference);
 		} catch (error) {
-			values.status = 'default-negotiation';
-			values.reason = `setCodecPreferences failed: ${String(error)}`;
+			values.status = 'error';
+			values.reason = `codec preference failed open: ${String(error)}`;
+		} finally {
+			try {
+				reportIpadDiagnostic('Codec', values);
+			} catch (error) {
+				console.error('[iPad Codec] Unable to forward diagnostic:', error);
+			}
 		}
-		reportIpadDiagnostic('Codec', values);
 	}
 
 	async logIpadSenderDiagnostics(): Promise<void> {
