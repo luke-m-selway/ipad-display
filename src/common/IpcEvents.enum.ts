@@ -34,5 +34,4 @@ export enum IpcEvents {
 	WriteTextToClipboard = 'write-text-to-clipboard',
 	CheckScreenRecordingPermission = 'check-screen-recording-permission',
 	RelaunchApp = 'relaunch-app',
-	IpadDiagnostic = 'ipad-diagnostic',
 }

@@ -137,15 +137,6 @@ static CGDisplayModeRef copyRequiredHiDPIMode(CGDirectDisplayID displayID) {
         size_t pixelWidth = CGDisplayModeGetPixelWidth(mode);
         size_t pixelHeight = CGDisplayModeGetPixelHeight(mode);
 
-        if (width == kRequiredDisplayWidth || height == kRequiredDisplayHeight ||
-            pixelWidth == kRequiredBackingWidth || pixelHeight == kRequiredBackingHeight) {
-            NSLog(@"[iPad Display] Available relevant mode: logical=%zux%zu pixels=%zux%zu refresh=%.2fHz",
-                  width,
-                  height,
-                  pixelWidth,
-                  pixelHeight,
-                  CGDisplayModeGetRefreshRate(mode));
-        }
         if (width == kRequiredDisplayWidth && height == kRequiredDisplayHeight &&
             pixelWidth == kRequiredBackingWidth && pixelHeight == kRequiredBackingHeight) {
             requiredMode = CGDisplayModeRetain(mode);
@@ -173,7 +164,9 @@ static BOOL selectRequiredHiDPIMode(CGDirectDisplayID displayID) {
 
 static void selectAndVerifyRequiredHiDPIMode(CGDirectDisplayID displayID, NSUInteger attemptsRemaining) {
     selectRequiredHiDPIMode(displayID);
-    logDisplayMode(displayID, @"current");
+    if (attemptsRemaining == 5 || attemptsRemaining == 0) {
+        logDisplayMode(displayID, attemptsRemaining == 5 ? @"initial" : @"final");
+    }
     if (attemptsRemaining == 0) return;
 
     // Ventura can restore a saved mode after the virtual display first appears.

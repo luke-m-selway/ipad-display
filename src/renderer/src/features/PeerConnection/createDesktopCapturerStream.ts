@@ -20,9 +20,11 @@ export default async function createDesktopCapturerStream(
 				captureSize?.height,
 				captureMultiplier ?? 0.5,
 				captureMultiplier ?? 1,
+				15,
+				peerConnection.sourceCaptureSize ? 30 : 60,
 			);
 			peerConnection.localStream = stream;
-			peerConnection.configureIpadVideoTrack();
+			peerConnection.applyIpadVideoTrackContentHint();
 		} else {
 			// when source is app window
 			const stream = await getDesktopSourceStreamBySourceID(sourceID);

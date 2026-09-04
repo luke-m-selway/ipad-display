@@ -51,7 +51,9 @@ export default function handleCreatePeer(
 				// TODO: basically here we need a client side simple peer, but we get a nodejs side simple peer
 				if (peerConnection.localStream !== null) {
 					peerConnection.peer.addStream(peerConnection.localStream);
-					void peerConnection.applyDegradationPreference();
+					if (peerConnection.sourceCaptureSize) {
+						void peerConnection.applyDegradationPreference();
+					}
 				}
 
 				peerConnection.peer.on('signal', (data) => {
@@ -70,10 +72,6 @@ export default function handleCreatePeer(
 
 				peerConnection.peer.on('data', (data) => {
 					handlePeerOnData(peerConnection, data);
-				});
-
-				peerConnection.peer.on('connect', () => {
-					void peerConnection.logIpadSenderDiagnostics();
 				});
 
 				// ensure cleanup on peer end/error to prevent dangling helper window

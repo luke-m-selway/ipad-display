@@ -24,38 +24,6 @@ type IpadDisplaySize = DisplaySize & {
 type SimplePeerWithRTCPeerConnection = {
 	_pc?: RTCPeerConnection;
 };
-type WebRTCStats = RTCStats & Record<string, unknown>;
-
-function reportIpadDiagnostic(
-	kind: 'Capture' | 'Sender',
-	values: Record<string, unknown>,
-): void {
-	window.electron.ipcRenderer.send(IpcEvents.IpadDiagnostic, { kind, values });
-}
-
-function getVideoOutboundStats(
-	report: RTCStatsReport,
-): WebRTCStats | undefined {
-	let outbound: WebRTCStats | undefined;
-	report.forEach((stats) => {
-		const candidate = stats as WebRTCStats;
-		if (
-			candidate.type === 'outbound-rtp' &&
-			(candidate.kind === 'video' || candidate.mediaType === 'video')
-		) {
-			outbound = candidate;
-		}
-	});
-	return outbound;
-}
-
-function numericStat(
-	stats: WebRTCStats | undefined,
-	name: string,
-): number | undefined {
-	const value = stats?.[name];
-	return typeof value === 'number' ? value : undefined;
-}
 
 export interface PartnerPeerUser {
 	username: string;
@@ -205,8 +173,10 @@ export default class PeerConnection {
 					captureSize?.height,
 					captureMultiplier ?? 0.5,
 					captureMultiplier ?? 1,
+					15,
+					this.sourceCaptureSize ? 30 : 60,
 				);
-				this.configureIpadVideoTrack(newStream);
+				this.applyIpadVideoTrackContentHint(newStream);
 				const newVideoTrack = newStream.getVideoTracks()[0];
 
 				if (!newVideoTrack) {
@@ -402,75 +372,7 @@ export default class PeerConnection {
 		}
 	}
 
-	async logIpadSenderDiagnostics(): Promise<void> {
-		if (!this.sourceCaptureSize) return;
-		const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
-		if (!pc?.getStats) return;
-
-		const firstReport = await pc.getStats();
-		const first = getVideoOutboundStats(firstReport);
-		await new Promise((resolve) => setTimeout(resolve, 2000));
-		const secondReport = await pc.getStats();
-		const second = getVideoOutboundStats(secondReport);
-		if (!second) {
-			reportIpadDiagnostic('Sender', {
-				status: 'No outbound video statistics are available',
-			});
-			return;
-		}
-
-		const elapsedSeconds =
-			(numericStat(second, 'timestamp') ?? performance.now()) / 1000 -
-			(numericStat(first, 'timestamp') ?? performance.now() - 2000) / 1000;
-		const bytesDelta =
-			(numericStat(second, 'bytesSent') ?? 0) -
-			(numericStat(first, 'bytesSent') ?? 0);
-		const framesEncodedDelta =
-			(numericStat(second, 'framesEncoded') ?? 0) -
-			(numericStat(first, 'framesEncoded') ?? 0);
-		const encodeTimeDelta =
-			(numericStat(second, 'totalEncodeTime') ?? 0) -
-			(numericStat(first, 'totalEncodeTime') ?? 0);
-		const codec = second.codecId
-			? (secondReport.get(second.codecId as string) as WebRTCStats | undefined)
-			: undefined;
-		const sender = pc
-			.getSenders()
-			.find((candidate) => candidate.track?.kind === 'video');
-		const parameters = sender?.getParameters();
-
-		reportIpadDiagnostic('Sender', {
-			frameWidth: second.frameWidth,
-			frameHeight: second.frameHeight,
-			framesPerSecond: second.framesPerSecond,
-			framesEncoded: second.framesEncoded,
-			framesSent: second.framesSent,
-			bitrateKbps:
-				elapsedSeconds > 0
-					? Math.round((bytesDelta * 8) / elapsedSeconds / 1000)
-					: undefined,
-			averageEncodeTimeMs:
-				framesEncodedDelta > 0
-					? Math.round((encodeTimeDelta / framesEncodedDelta) * 1000 * 100) /
-						100
-					: undefined,
-			qualityLimitationReason: second.qualityLimitationReason,
-			qualityLimitationDurations: second.qualityLimitationDurations,
-			qpSum: second.qpSum,
-			codecMimeType: codec?.mimeType,
-			codecFmtp: codec?.sdpFmtpLine,
-			encoderImplementation: second.encoderImplementation,
-			powerEfficientEncoder: second.powerEfficientEncoder,
-			degradationPreference: parameters?.degradationPreference,
-			encodings: parameters?.encodings?.map((encoding) => ({
-				scaleResolutionDownBy: encoding.scaleResolutionDownBy,
-				maxBitrate: encoding.maxBitrate,
-				maxFramerate: encoding.maxFramerate,
-			})),
-		});
-	}
-
-	configureIpadVideoTrack(stream = this.localStream): void {
+	applyIpadVideoTrackContentHint(stream = this.localStream): void {
 		if (!this.sourceCaptureSize) return;
 		const track = stream?.getVideoTracks()[0];
 		if (!track) return;
@@ -479,23 +381,7 @@ export default class PeerConnection {
 			track.contentHint = 'text';
 			if (track.contentHint !== 'text') track.contentHint = 'detail';
 		} catch {
-			// The readback below records a runtime that does not accept either hint.
+			// Some Chromium versions reject content hints for desktop-capture tracks.
 		}
-
-		const settings = track.getSettings() as MediaTrackSettings & {
-			resizeMode?: string;
-		};
-		const capabilities = track.getCapabilities?.();
-		reportIpadDiagnostic('Capture', {
-			requestedWidth: this.sourceCaptureSize.width,
-			requestedHeight: this.sourceCaptureSize.height,
-			width: settings.width,
-			height: settings.height,
-			frameRate: settings.frameRate,
-			resizeMode: settings.resizeMode,
-			contentHint: track.contentHint,
-			widthCapabilities: capabilities?.width,
-			heightCapabilities: capabilities?.height,
-		});
 	}
 }

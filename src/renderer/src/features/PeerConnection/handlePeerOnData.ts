@@ -32,10 +32,10 @@ export default async function handlePeerOnData(
 			captureSize?.height,
 			peerConnection.sourceCaptureSize ? 1 : minVideoQualityMultiplier,
 			captureMultiplier,
-			60,
-			60,
+			peerConnection.sourceCaptureSize ? 15 : 60,
+			peerConnection.sourceCaptureSize ? 30 : 60,
 		);
-		peerConnection.configureIpadVideoTrack(newStream);
+		peerConnection.applyIpadVideoTrackContentHint(newStream);
 		const newVideoTrack = newStream.getVideoTracks()[0];
 		const oldStream = peerConnection.localStream;
 		const oldTrack = oldStream?.getVideoTracks()[0];

@@ -34,22 +34,6 @@ type VirtualDisplaySource = {
 	captureHeight: number;
 };
 
-type IpadDiagnostic = {
-	kind: 'Capture' | 'Sender';
-	values: Record<string, unknown>;
-};
-
-function isIpadDiagnostic(value: unknown): value is IpadDiagnostic {
-	if (!value || typeof value !== 'object') return false;
-	const diagnostic = value as Partial<IpadDiagnostic>;
-	return (
-		(diagnostic.kind === 'Capture' || diagnostic.kind === 'Sender') &&
-		Boolean(diagnostic.values) &&
-		typeof diagnostic.values === 'object' &&
-		!Array.isArray(diagnostic.values)
-	);
-}
-
 let virtualDisplay: VirtualDisplaySource | null = null;
 let sharingSession: SharingSession | null = null;
 let restartInProgress = false;
@@ -93,9 +77,6 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 	if (String(display.id) === primaryDisplayID) {
 		throw new Error('Refusing to capture the primary display');
 	}
-	console.log(
-		`[iPad Host] Electron display ${display.id}: bounds=${display.bounds.width}x${display.bounds.height} size=${display.size.width}x${display.size.height} scaleFactor=${display.scaleFactor}`,
-	);
 	if (display.scaleFactor < 2) {
 		console.log(
 			`[iPad Host] Virtual display ${expectedDisplayID} is not HiDPI yet; waiting for scaleFactor 2`,
@@ -111,6 +92,9 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 		);
 		return null;
 	}
+	console.log(
+		`[iPad Host] Electron display ${display.id}: bounds=${display.bounds.width}x${display.bounds.height} size=${display.size.width}x${display.size.height} scaleFactor=${display.scaleFactor}`,
+	);
 
 	const sources = await desktopCapturer.getSources({
 		types: [DesktopCapturerSourceType.SCREEN],
@@ -236,10 +220,6 @@ function registerIpadIPCHandlers(): void {
 		};
 	});
 	ipcMain.handle(IpcEvents.GetAppLanguage, () => 'en');
-	ipcMain.on(IpcEvents.IpadDiagnostic, (_, diagnostic: unknown) => {
-		if (!isIpadDiagnostic(diagnostic)) return;
-		console.log(`[iPad ${diagnostic.kind}]`, diagnostic.values);
-	});
 	ipcMain.handle(IpcEvents.DisconnectDeviceById, (_, deviceID: string) =>
 		getDeskreenGlobal().connectedDevicesService.disconnectDeviceByID(deviceID),
 	);
