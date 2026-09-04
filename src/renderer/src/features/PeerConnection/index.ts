@@ -448,6 +448,7 @@ export default class PeerConnection {
 
 		const values: Record<string, unknown> = {
 			status: 'error',
+			stage: 'starting',
 			setCodecPreferencesAvailable: false,
 			videoTransceiverExistsImmediatelyAfterAddStream: false,
 			signalingState: undefined,
@@ -460,6 +461,7 @@ export default class PeerConnection {
 			let receiverCapabilities: RTCRtpCapabilities | null = null;
 			let capabilityError: string | undefined;
 			try {
+				values.stage = 'reading-capabilities';
 				senderCapabilities =
 					typeof RTCRtpSender === 'undefined'
 						? null
@@ -471,6 +473,7 @@ export default class PeerConnection {
 			} catch (error) {
 				capabilityError = String(error);
 			}
+			values.stage = 'finding-video-transceiver';
 			const transceiver = pc
 				?.getTransceivers?.()
 				.find((candidate) => candidate.sender.track?.kind === 'video');
@@ -483,6 +486,7 @@ export default class PeerConnection {
 				senderCapabilities?.codecs,
 			);
 			const h264Codecs = supportedCodecs.filter(isH264Codec);
+			values.stage = 'preparing-diagnostic';
 			Object.assign(values, {
 				setCodecPreferencesAvailable:
 					typeof transceiver?.setCodecPreferences === 'function',
@@ -526,8 +530,10 @@ export default class PeerConnection {
 				...h264Codecs,
 				...supportedCodecs.filter((codec) => !isH264Codec(codec)),
 			];
+			values.stage = 'setting-codec-preference';
 			transceiver.setCodecPreferences(codecPreference);
 			values.status = 'applied';
+			values.stage = 'applied';
 			values.appliedPreference = describeCodecs(codecPreference);
 		} catch (error) {
 			values.status = 'error';
