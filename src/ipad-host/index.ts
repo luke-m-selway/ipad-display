@@ -35,7 +35,7 @@ type VirtualDisplaySource = {
 };
 
 type IpadDiagnostic = {
-	kind: 'Capture' | 'Codec' | 'Sender';
+	kind: 'Capture' | 'Codec' | 'GPU' | 'Sender' | 'ViewerCodec';
 	values: Record<string, unknown>;
 };
 
@@ -45,7 +45,9 @@ function isIpadDiagnostic(value: unknown): value is IpadDiagnostic {
 	return (
 		(diagnostic.kind === 'Capture' ||
 			diagnostic.kind === 'Codec' ||
-			diagnostic.kind === 'Sender') &&
+			diagnostic.kind === 'GPU' ||
+			diagnostic.kind === 'Sender' ||
+			diagnostic.kind === 'ViewerCodec') &&
 		Boolean(diagnostic.values) &&
 		typeof diagnostic.values === 'object' &&
 		!Array.isArray(diagnostic.values)
@@ -56,6 +58,33 @@ let virtualDisplay: VirtualDisplaySource | null = null;
 let sharingSession: SharingSession | null = null;
 let restartInProgress = false;
 let isQuitting = false;
+
+async function logIpadGpuDiagnostics(): Promise<void> {
+	const values: Record<string, unknown> = {
+		electronVersion: process.versions.electron,
+		chromiumVersion: process.versions.chrome,
+	};
+	try {
+		values.hardwareAccelerationEnabled = app.isHardwareAccelerationEnabled();
+		const features = app.getGPUFeatureStatus() as Record<string, unknown>;
+		values.videoEncode = features.video_encode;
+		values.videoDecode = features.video_decode;
+		values.gpuRasterization = features.gpu_rasterization;
+	} catch (error) {
+		values.featureStatusError = String(error);
+	}
+	try {
+		const gpuInfo = (await app.getGPUInfo('basic')) as unknown as Record<
+			string,
+			unknown
+		>;
+		values.gpuDevices = gpuInfo.gpuDevice;
+		values.machineModel = gpuInfo.machineModel;
+	} catch (error) {
+		values.gpuInfoError = String(error);
+	}
+	console.log('[iPad GPU]', values);
+}
 
 const hostUser: LocalPeerUser = {
 	username: 'iPad-Host',
@@ -275,6 +304,7 @@ async function startIpadHost(): Promise<void> {
 	}
 	await app.whenReady();
 	if (process.platform === 'darwin') app.setActivationPolicy('accessory');
+	void logIpadGpuDiagnostics();
 
 	startLogBufferCleanup();
 	const appPath = join(__dirname, '..');

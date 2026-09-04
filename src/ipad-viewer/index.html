@@ -105,6 +105,21 @@
           });
         };
 
+        const h264Capabilities = (rtpClass) => {
+          try {
+            const capabilities = rtpClass?.getCapabilities?.('video');
+            return (capabilities?.codecs ?? [])
+              .filter((codec) => codec.mimeType?.toLowerCase() === 'video/h264')
+              .map((codec) => ({
+                mimeType: codec.mimeType,
+                clockRate: codec.clockRate,
+                sdpFmtpLine: codec.sdpFmtpLine,
+              }));
+          } catch (error) {
+            return { error: String(error) };
+          }
+        };
+
         peer.on('signal', (signalData) => {
           sendMessage('CALL_ACCEPTED', { signalData });
         });
@@ -147,6 +162,10 @@
             browser: navigator.userAgent,
             deviceScreenWidth: window.screen.width,
             deviceScreenHeight: window.screen.height,
+          });
+          sendMessage('IPAD_CODEC_CAPABILITIES', {
+            receiverH264: h264Capabilities(window.RTCRtpReceiver),
+            senderH264: h264Capabilities(window.RTCRtpSender),
           });
           setStatus('Waiting for host…');
         });

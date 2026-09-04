@@ -26,8 +26,16 @@ type SimplePeerWithRTCPeerConnection = {
 };
 type WebRTCStats = RTCStats & Record<string, unknown>;
 
+const H264_MEDIA_CAPABILITY_PROFILES = [
+	'42e01f',
+	'42001f',
+	'4d001f',
+	'640034',
+	'640c1f',
+];
+
 function reportIpadDiagnostic(
-	kind: 'Capture' | 'Codec' | 'Sender',
+	kind: 'Capture' | 'Codec' | 'Sender' | 'ViewerCodec',
 	values: Record<string, unknown>,
 ): void {
 	window.electron.ipcRenderer.send(IpcEvents.IpadDiagnostic, { kind, values });
@@ -445,6 +453,7 @@ export default class PeerConnection {
 
 	applyIpadCodecPreference(): void {
 		if (!this.sourceCaptureSize) return;
+		void this.logIpadH264MediaCapabilities();
 
 		const values: Record<string, unknown> = {
 			status: 'error',
@@ -456,6 +465,9 @@ export default class PeerConnection {
 			h264ReceiverCapabilities: [],
 		};
 		try {
+			const codecMode =
+				process.env.IPAD_VIDEO_CODEC === 'h264' ? 'h264' : 'default';
+			values.codecMode = codecMode;
 			const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
 			let senderCapabilities: RTCRtpCapabilities | null = null;
 			let receiverCapabilities: RTCRtpCapabilities | null = null;
@@ -525,6 +537,11 @@ export default class PeerConnection {
 				values.reason = 'no H264 codec capability is available';
 				return;
 			}
+			if (codecMode !== 'h264') {
+				values.status = 'default-negotiation';
+				values.reason = 'IPAD_VIDEO_CODEC is not h264';
+				return;
+			}
 
 			const codecPreference = [
 				...h264Codecs,
@@ -543,6 +560,67 @@ export default class PeerConnection {
 				reportIpadDiagnostic('Codec', values);
 			} catch (error) {
 				console.error('[iPad Codec] Unable to forward diagnostic:', error);
+			}
+		}
+	}
+
+	async logIpadH264MediaCapabilities(): Promise<void> {
+		if (!this.sourceCaptureSize) return;
+
+		const values: Record<string, unknown> = {
+			probe: 'media-capabilities',
+			workload: {
+				width: this.sourceCaptureSize.width,
+				height: this.sourceCaptureSize.height,
+				bitrate: 1_000_000,
+				framerate: 60,
+			},
+			profiles: [],
+		};
+		try {
+			if (typeof navigator.mediaCapabilities?.encodingInfo !== 'function') {
+				values.status = 'unavailable';
+				return;
+			}
+			const profiles: Array<Record<string, unknown>> = [];
+			for (const profile of H264_MEDIA_CAPABILITY_PROFILES) {
+				try {
+					const info = await navigator.mediaCapabilities.encodingInfo({
+						type: 'webrtc',
+						video: {
+							contentType: `video/avc; codecs="avc1.${profile}"`,
+							width: this.sourceCaptureSize.width,
+							height: this.sourceCaptureSize.height,
+							bitrate: 1_000_000,
+							framerate: 60,
+						},
+					});
+					profiles.push({
+						profileLevelId: profile,
+						supported: info.supported,
+						smooth: info.smooth,
+						powerEfficient: info.powerEfficient,
+					});
+				} catch (error) {
+					profiles.push({
+						profileLevelId: profile,
+						error: String(error),
+					});
+				}
+			}
+			values.status = 'complete';
+			values.profiles = profiles;
+		} catch (error) {
+			values.status = 'error';
+			values.reason = String(error);
+		} finally {
+			try {
+				reportIpadDiagnostic('Codec', values);
+			} catch (error) {
+				console.error(
+					'[iPad Codec] Unable to forward MediaCapabilities:',
+					error,
+				);
 			}
 		}
 	}

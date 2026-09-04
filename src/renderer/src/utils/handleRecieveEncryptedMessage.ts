@@ -1,5 +1,5 @@
-import { process as processMessage } from './message';
 import { IpcEvents } from '../../../common/IpcEvents.enum';
+import { process as processMessage } from './message';
 
 export type CallAcceptedMessageWithPayload = {
 	type: 'CALL_ACCEPTED';
@@ -53,6 +53,11 @@ export type DisconnectByHostMachineUserMessageWithPayload = {
 	payload: Record<string, unknown>;
 };
 
+export type IpadCodecCapabilitiesMessageWithPayload = {
+	type: 'IPAD_CODEC_CAPABILITIES';
+	payload: Record<string, unknown>;
+};
+
 export type ProcessedMessage =
 	| CallAcceptedMessageWithPayload
 	| CallUserMessageWithPayload
@@ -61,7 +66,8 @@ export type ProcessedMessage =
 	| AppLanguageMessageWithPayload
 	| DenyToConnectMessageWithPayload
 	| AllowedToConnectMessageWithPayload
-	| DisconnectByHostMachineUserMessageWithPayload;
+	| DisconnectByHostMachineUserMessageWithPayload
+	| IpadCodecCapabilitiesMessageWithPayload;
 
 export function handleDeviceIPMessage(
 	deviceIP: string,
@@ -118,6 +124,12 @@ export const handleRecieveEncryptedMessage = async (
 			payload: {
 				value: appLanguage,
 			},
+		});
+	}
+	if (message.type === 'IPAD_CODEC_CAPABILITIES') {
+		window.electron.ipcRenderer.send(IpcEvents.IpadDiagnostic, {
+			kind: 'ViewerCodec',
+			values: message.payload,
 		});
 	}
 };
