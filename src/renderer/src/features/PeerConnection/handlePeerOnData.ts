@@ -1,7 +1,7 @@
 import DesktopCapturerSourceType from '../../../../common/DesktopCapturerSourceType';
 import getDesktopSourceStreamBySourceID from './getDesktopSourceStreamBySourceID';
-import prepareDataMessageToSendScreenSourceType from './prepareDataMessageToSendScreenSourceType';
 import NullSimplePeer from './NullSimplePeer';
+import prepareDataMessageToSendScreenSourceType from './prepareDataMessageToSendScreenSourceType';
 
 export default async function handlePeerOnData(
 	peerConnection: PeerConnection,
@@ -21,15 +21,21 @@ export default async function handlePeerOnData(
 		)
 			return;
 
+		const captureSize =
+			peerConnection.sourceCaptureSize ?? peerConnection.sourceDisplaySize;
+		const captureMultiplier = peerConnection.sourceCaptureSize
+			? 1
+			: maxVideoQualityMultiplier;
 		const newStream = await getDesktopSourceStreamBySourceID(
 			peerConnection.desktopCapturerSourceID,
-			peerConnection.sourceDisplaySize?.width,
-			peerConnection.sourceDisplaySize?.height,
-			minVideoQualityMultiplier,
-			maxVideoQualityMultiplier,
-			60,
-			60,
+			captureSize?.width,
+			captureSize?.height,
+			peerConnection.sourceCaptureSize ? 1 : minVideoQualityMultiplier,
+			captureMultiplier,
+			peerConnection.sourceCaptureSize ? 15 : 60,
+			peerConnection.sourceCaptureSize ? 30 : 60,
 		);
+		peerConnection.applyIpadVideoTrackContentHint(newStream);
 		const newVideoTrack = newStream.getVideoTracks()[0];
 		const oldStream = peerConnection.localStream;
 		const oldTrack = oldStream?.getVideoTracks()[0];

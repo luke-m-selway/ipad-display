@@ -1,21 +1,24 @@
-import { app, desktopCapturer, ipcMain, screen } from 'electron';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { app, desktopCapturer, ipcMain, screen } from 'electron';
 import DesktopCapturerSourceType from '../common/DesktopCapturerSourceType';
 import { IpcEvents } from '../common/IpcEvents.enum';
+import type { LocalPeerUser } from '../common/LocalPeerUser';
+import SharingSession from '../features/SharingSessionService/SharingSession';
+import SharingSessionStatusEnum from '../features/SharingSessionService/SharingSessionStatusEnum';
 import { getDeskreenGlobal } from '../main/helpers/getDeskreenGlobal';
 import { initGlobals } from '../main/helpers/initGlobals';
 import { startLogBufferCleanup } from '../main/utils/LoggerWithFilePrefix';
 import { signalingServer } from '../server';
-import SharingSession from '../features/SharingSessionService/SharingSession';
-import SharingSessionStatusEnum from '../features/SharingSessionService/SharingSessionStatusEnum';
-import type { LocalPeerUser } from '../common/LocalPeerUser';
 
 const IPAD_BIND_IP = '192.168.2.1';
 const IPAD_PORT = 3131;
 const IPAD_FIXED_ROOM_ID = 'ipad-main';
 const IPAD_DISPLAY_WIDTH = 1600;
 const IPAD_DISPLAY_HEIGHT = 1200;
+// Keep the 1600x1200 desktop geometry while capturing enough backing pixels for text.
+const IPAD_CAPTURE_WIDTH = 2304;
+const IPAD_CAPTURE_HEIGHT = 1728;
 const displayIDStateFile =
 	process.env.IPAD_DISPLAY_ID_FILE ?? '/tmp/ipad-display/virtual-display-id';
 const readyStateFile =
@@ -27,6 +30,8 @@ type VirtualDisplaySource = {
 	displayID: string;
 	width: number;
 	height: number;
+	captureWidth: number;
+	captureHeight: number;
 };
 
 let virtualDisplay: VirtualDisplaySource | null = null;
@@ -59,7 +64,9 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 	const expectedDisplayID = getExpectedDisplayID();
 	const primaryDisplayID = String(screen.getPrimaryDisplay().id);
 	const displays = screen.getAllDisplays();
-	const display = displays.find((candidate) => String(candidate.id) === expectedDisplayID);
+	const display = displays.find(
+		(candidate) => String(candidate.id) === expectedDisplayID,
+	);
 
 	if (!display) {
 		console.log(
@@ -70,6 +77,12 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 	if (String(display.id) === primaryDisplayID) {
 		throw new Error('Refusing to capture the primary display');
 	}
+	if (display.scaleFactor < 2) {
+		console.log(
+			`[iPad Host] Virtual display ${expectedDisplayID} is not HiDPI yet; waiting for scaleFactor 2`,
+		);
+		return null;
+	}
 	if (
 		display.bounds.width !== IPAD_DISPLAY_WIDTH ||
 		display.bounds.height !== IPAD_DISPLAY_HEIGHT
@@ -79,6 +92,9 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 		);
 		return null;
 	}
+	console.log(
+		`[iPad Host] Electron display ${display.id}: bounds=${display.bounds.width}x${display.bounds.height} size=${display.size.width}x${display.size.height} scaleFactor=${display.scaleFactor}`,
+	);
 
 	const sources = await desktopCapturer.getSources({
 		types: [DesktopCapturerSourceType.SCREEN],
@@ -100,6 +116,8 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 		displayID: expectedDisplayID,
 		width: display.bounds.width,
 		height: display.bounds.height,
+		captureWidth: IPAD_CAPTURE_WIDTH,
+		captureHeight: IPAD_CAPTURE_HEIGHT,
 	};
 }
 
@@ -117,7 +135,10 @@ async function waitForVirtualDisplay(): Promise<VirtualDisplaySource> {
 function startSharingForConnectedViewer(session: SharingSession): void {
 	return session.setOnDeviceConnectedCallback((device) => {
 		console.log('[iPad Host] Helper received DEVICE_DETAILS from viewer');
-		if (sharingSession !== session || session.status !== SharingSessionStatusEnum.NOT_CONNECTED) {
+		if (
+			sharingSession !== session ||
+			session.status !== SharingSessionStatusEnum.NOT_CONNECTED
+		) {
 			console.log('[iPad Host] Ignoring a duplicate viewer connection event');
 			return;
 		}
@@ -135,7 +156,9 @@ function startSharingForConnectedViewer(session: SharingSession): void {
 			session.setStatus(SharingSessionStatusEnum.CONNECTED);
 			session.callPeer();
 			session.setStatus(SharingSessionStatusEnum.SHARING);
-			console.log('[iPad Host] Viewer approved; starting Deskreen simple-peer call');
+			console.log(
+				'[iPad Host] Viewer approved; starting Deskreen simple-peer call',
+			);
 		} catch (error) {
 			console.error('[iPad Host] Failed to start viewer stream', error);
 			session.setStatus(SharingSessionStatusEnum.ERROR);
@@ -160,7 +183,8 @@ function createSharingSession(source: VirtualDisplaySource): SharingSession {
 }
 
 async function restartSharingSession(sessionID: string): Promise<void> {
-	if (isQuitting || restartInProgress || sharingSession?.id !== sessionID) return;
+	if (isQuitting || restartInProgress || sharingSession?.id !== sessionID)
+		return;
 	restartInProgress = true;
 	try {
 		const previousSession = sharingSession;
@@ -180,20 +204,31 @@ async function restartSharingSession(sessionID: string): Promise<void> {
 function registerIpadIPCHandlers(): void {
 	ipcMain.handle(IpcEvents.GetPort, () => signalingServer.port);
 	ipcMain.handle(IpcEvents.GetSignalingHost, () => `http://${IPAD_BIND_IP}`);
-	ipcMain.handle(IpcEvents.GetSourceDisplayIDByDesktopCapturerSourceID, (_, sourceID) =>
-		virtualDisplay?.sourceID === sourceID ? virtualDisplay.displayID : '',
+	ipcMain.handle(
+		IpcEvents.GetSourceDisplayIDByDesktopCapturerSourceID,
+		(_, sourceID) =>
+			virtualDisplay?.sourceID === sourceID ? virtualDisplay.displayID : '',
 	);
 	ipcMain.handle('get-display-size-by-display-id', (_, displayID: string) => {
-		if (!virtualDisplay || displayID !== virtualDisplay.displayID) return undefined;
-		return { width: virtualDisplay.width, height: virtualDisplay.height };
+		if (!virtualDisplay || displayID !== virtualDisplay.displayID)
+			return undefined;
+		return {
+			width: virtualDisplay.width,
+			height: virtualDisplay.height,
+			captureWidth: virtualDisplay.captureWidth,
+			captureHeight: virtualDisplay.captureHeight,
+		};
 	});
 	ipcMain.handle(IpcEvents.GetAppLanguage, () => 'en');
 	ipcMain.handle(IpcEvents.DisconnectDeviceById, (_, deviceID: string) =>
 		getDeskreenGlobal().connectedDevicesService.disconnectDeviceByID(deviceID),
 	);
-	ipcMain.handle(IpcEvents.DestroySharingSessionById, (_, sessionID: string) => {
-		void restartSharingSession(sessionID);
-	});
+	ipcMain.handle(
+		IpcEvents.DestroySharingSessionById,
+		(_, sessionID: string) => {
+			void restartSharingSession(sessionID);
+		},
+	);
 	// The fixed room remains owned for the host lifetime; a reconnect gets a fresh
 	// helper session without exposing a transient unpaired room to another client.
 	ipcMain.handle(IpcEvents.UnmarkRoomIDAsTaken, () => undefined);
@@ -201,9 +236,14 @@ function registerIpadIPCHandlers(): void {
 
 async function startIpadHost(): Promise<void> {
 	if (process.env.IPAD_BIND_IP && process.env.IPAD_BIND_IP !== IPAD_BIND_IP) {
-		throw new Error(`iPad mode requires ${IPAD_BIND_IP}, not ${process.env.IPAD_BIND_IP}`);
+		throw new Error(
+			`iPad mode requires ${IPAD_BIND_IP}, not ${process.env.IPAD_BIND_IP}`,
+		);
 	}
-	if (process.env.IPAD_FIXED_ROOM_ID && process.env.IPAD_FIXED_ROOM_ID !== IPAD_FIXED_ROOM_ID) {
+	if (
+		process.env.IPAD_FIXED_ROOM_ID &&
+		process.env.IPAD_FIXED_ROOM_ID !== IPAD_FIXED_ROOM_ID
+	) {
 		throw new Error(`iPad mode requires room ${IPAD_FIXED_ROOM_ID}`);
 	}
 
@@ -221,7 +261,9 @@ async function startIpadHost(): Promise<void> {
 
 	await signalingServer.start();
 	if (signalingServer.port !== IPAD_PORT) {
-		throw new Error(`iPad mode unexpectedly selected port ${signalingServer.port}`);
+		throw new Error(
+			`iPad mode unexpectedly selected port ${signalingServer.port}`,
+		);
 	}
 	virtualDisplay = await waitForVirtualDisplay();
 	sharingSession = createSharingSession(virtualDisplay);

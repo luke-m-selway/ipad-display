@@ -1,23 +1,26 @@
-import { prepare as prepareMessage } from '../../utils/message';
+import { Socket } from 'socket.io-client';
 import { connectSocket } from '../../../../common/connectSocket';
-import handleCreatePeer from './handleCreatePeer';
-import handleSocket from './handleSocket';
-import { handleRecieveEncryptedMessage } from '../../utils/handleRecieveEncryptedMessage';
-import handleSelfDestroy from './handleSelfDestroy';
-import NullUser from './NullUser';
-import NullSimplePeer from './NullSimplePeer';
-import setDisplaySizeFromLocalStream from './handleSetDisplaySizeFromLocalStream';
 import DesktopCapturerSourceType from '../../../../common/DesktopCapturerSourceType';
+import { Device } from '../../../../common/Device';
 import getAppLanguage from '../../../../common/getAppLanguage';
 import { IpcEvents } from '../../../../common/IpcEvents.enum';
-import getDesktopSourceStreamBySourceID from './getDesktopSourceStreamBySourceID';
-
-import { Device } from '../../../../common/Device';
 import { LocalPeerUser } from '../../../../common/LocalPeerUser';
 import type { SendEncryptedMessagePayload } from '../../../../common/SendEncryptedMessagePayload';
-import { Socket } from 'socket.io-client';
+import { handleRecieveEncryptedMessage } from '../../utils/handleRecieveEncryptedMessage';
+import { prepare as prepareMessage } from '../../utils/message';
+import getDesktopSourceStreamBySourceID from './getDesktopSourceStreamBySourceID';
+import handleCreatePeer from './handleCreatePeer';
+import handleSelfDestroy from './handleSelfDestroy';
+import setDisplaySizeFromLocalStream from './handleSetDisplaySizeFromLocalStream';
+import handleSocket from './handleSocket';
+import NullSimplePeer from './NullSimplePeer';
+import NullUser from './NullUser';
 
 type DisplaySize = { width: number; height: number };
+type IpadDisplaySize = DisplaySize & {
+	captureWidth?: number;
+	captureHeight?: number;
+};
 type SimplePeerWithRTCPeerConnection = {
 	_pc?: RTCPeerConnection;
 };
@@ -51,6 +54,7 @@ export default class PeerConnection {
 	onDeviceConnectedCallback: (device: Device) => void;
 	displayID: string;
 	sourceDisplaySize: DisplaySize | undefined;
+	sourceCaptureSize: DisplaySize | undefined;
 	beforeunloadHandler: (() => void) | null = null;
 
 	constructor(
@@ -72,6 +76,7 @@ export default class PeerConnection {
 		this.localStream = null;
 		this.displayID = '';
 		this.sourceDisplaySize = undefined;
+		this.sourceCaptureSize = undefined;
 		this.onDeviceConnectedCallback = () => {
 			// noop until UI layer registers callback
 		};
@@ -101,6 +106,7 @@ export default class PeerConnection {
 
 		// clear old display size when switching sources to ensure new source uses correct dimensions
 		this.sourceDisplaySize = undefined;
+		this.sourceCaptureSize = undefined;
 		this.displayID = '';
 
 		await this.setDisplayIDByDesktopCapturerSourceID();
@@ -114,6 +120,7 @@ export default class PeerConnection {
 		) {
 			// clear display size for window sources
 			this.sourceDisplaySize = undefined;
+			this.sourceCaptureSize = undefined;
 			return;
 		}
 
@@ -129,13 +136,19 @@ export default class PeerConnection {
 	}
 
 	async setDisplaySizeRetreivedFromMainProcess(): Promise<void> {
-		const size: DisplaySize | 'undefined' =
+		const size: IpadDisplaySize | undefined =
 			await window.electron.ipcRenderer.invoke(
 				'get-display-size-by-display-id',
 				this.displayID,
 			);
-		if (size !== 'undefined') {
-			this.sourceDisplaySize = size;
+		if (size) {
+			this.sourceDisplaySize = { width: size.width, height: size.height };
+			if (size.captureWidth && size.captureHeight) {
+				this.sourceCaptureSize = {
+					width: size.captureWidth,
+					height: size.captureHeight,
+				};
+			}
 		}
 	}
 
@@ -152,13 +165,18 @@ export default class PeerConnection {
 					return;
 				}
 
+				const captureSize = this.sourceCaptureSize ?? this.sourceDisplaySize;
+				const captureMultiplier = this.sourceCaptureSize ? 1 : undefined;
 				const newStream = await getDesktopSourceStreamBySourceID(
 					this.desktopCapturerSourceID,
-					this.sourceDisplaySize?.width,
-					this.sourceDisplaySize?.height,
-					0.5,
-					1,
+					captureSize?.width,
+					captureSize?.height,
+					captureMultiplier ?? 0.5,
+					captureMultiplier ?? 1,
+					15,
+					this.sourceCaptureSize ? 30 : 60,
 				);
+				this.applyIpadVideoTrackContentHint(newStream);
 				const newVideoTrack = newStream.getVideoTracks()[0];
 
 				if (!newVideoTrack) {
@@ -351,6 +369,19 @@ export default class PeerConnection {
 				'[PeerConnection] Leaving default degradation preference after setParameters failed:',
 				e,
 			);
+		}
+	}
+
+	applyIpadVideoTrackContentHint(stream = this.localStream): void {
+		if (!this.sourceCaptureSize) return;
+		const track = stream?.getVideoTracks()[0];
+		if (!track) return;
+
+		try {
+			track.contentHint = 'text';
+			if (track.contentHint !== 'text') track.contentHint = 'detail';
+		} catch {
+			// Some Chromium versions reject content hints for desktop-capture tracks.
 		}
 	}
 }
