@@ -20,10 +20,36 @@ type DisplaySize = { width: number; height: number };
 type IpadDisplaySize = DisplaySize & {
 	captureWidth?: number;
 	captureHeight?: number;
+	benchmarkEnabled?: boolean;
 };
 type SimplePeerWithRTCPeerConnection = {
 	_pc?: RTCPeerConnection;
 };
+type WebRTCStats = RTCStats & Record<string, unknown>;
+
+function getVideoOutboundStats(
+	report: RTCStatsReport,
+): WebRTCStats | undefined {
+	let outbound: WebRTCStats | undefined;
+	report.forEach((stats) => {
+		const candidate = stats as WebRTCStats;
+		if (
+			candidate.type === 'outbound-rtp' &&
+			(candidate.kind === 'video' || candidate.mediaType === 'video')
+		) {
+			outbound = candidate;
+		}
+	});
+	return outbound;
+}
+
+function numericStat(
+	stats: WebRTCStats | undefined,
+	name: string,
+): number | undefined {
+	const value = stats?.[name];
+	return typeof value === 'number' ? value : undefined;
+}
 
 export interface PartnerPeerUser {
 	username: string;
@@ -55,6 +81,8 @@ export default class PeerConnection {
 	displayID: string;
 	sourceDisplaySize: DisplaySize | undefined;
 	sourceCaptureSize: DisplaySize | undefined;
+	isIpadBenchmark: boolean;
+	benchmarkStatsStarted: boolean;
 	beforeunloadHandler: (() => void) | null = null;
 
 	constructor(
@@ -77,6 +105,8 @@ export default class PeerConnection {
 		this.displayID = '';
 		this.sourceDisplaySize = undefined;
 		this.sourceCaptureSize = undefined;
+		this.isIpadBenchmark = false;
+		this.benchmarkStatsStarted = false;
 		this.onDeviceConnectedCallback = () => {
 			// noop until UI layer registers callback
 		};
@@ -107,6 +137,8 @@ export default class PeerConnection {
 		// clear old display size when switching sources to ensure new source uses correct dimensions
 		this.sourceDisplaySize = undefined;
 		this.sourceCaptureSize = undefined;
+		this.isIpadBenchmark = false;
+		this.benchmarkStatsStarted = false;
 		this.displayID = '';
 
 		await this.setDisplayIDByDesktopCapturerSourceID();
@@ -121,6 +153,7 @@ export default class PeerConnection {
 			// clear display size for window sources
 			this.sourceDisplaySize = undefined;
 			this.sourceCaptureSize = undefined;
+			this.isIpadBenchmark = false;
 			return;
 		}
 
@@ -149,6 +182,7 @@ export default class PeerConnection {
 					height: size.captureHeight,
 				};
 			}
+			this.isIpadBenchmark = size.benchmarkEnabled === true;
 		}
 	}
 
@@ -382,6 +416,89 @@ export default class PeerConnection {
 			if (track.contentHint !== 'text') track.contentHint = 'detail';
 		} catch {
 			// Some Chromium versions reject content hints for desktop-capture tracks.
+		}
+	}
+
+	async writeIpadBenchmarkResult(): Promise<void> {
+		if (!this.isIpadBenchmark || this.benchmarkStatsStarted) return;
+		this.benchmarkStatsStarted = true;
+
+		const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
+		if (!pc?.getStats || !this.sourceCaptureSize) return;
+
+		try {
+			const firstReport = await pc.getStats();
+			const first = getVideoOutboundStats(firstReport);
+			await new Promise((resolve) => setTimeout(resolve, 10_000));
+			const secondReport = await pc.getStats();
+			const second = getVideoOutboundStats(secondReport);
+			if (!second) return;
+
+			const firstTimestamp = numericStat(first, 'timestamp');
+			const secondTimestamp = numericStat(second, 'timestamp');
+			const measurementIntervalMs =
+				firstTimestamp && secondTimestamp
+					? secondTimestamp - firstTimestamp
+					: 10_000;
+			const framesEncodedDelta =
+				(numericStat(second, 'framesEncoded') ?? 0) -
+				(numericStat(first, 'framesEncoded') ?? 0);
+			const bytesSentDelta =
+				(numericStat(second, 'bytesSent') ?? 0) -
+				(numericStat(first, 'bytesSent') ?? 0);
+			const totalEncodeTimeDelta =
+				(numericStat(second, 'totalEncodeTime') ?? 0) -
+				(numericStat(first, 'totalEncodeTime') ?? 0);
+			const codec = second.codecId
+				? (secondReport.get(second.codecId as string) as
+						| WebRTCStats
+						| undefined)
+				: undefined;
+			const sender = pc
+				.getSenders()
+				.find((candidate) => candidate.track?.kind === 'video');
+			const parameters = sender?.getParameters();
+
+			window.electron.ipcRenderer.send(IpcEvents.IpadBenchmarkResult, {
+				measurementIntervalMs,
+				actualFrameWidth: second.frameWidth,
+				actualFrameHeight: second.frameHeight,
+				framesEncodedDelta,
+				framesSentDelta:
+					(numericStat(second, 'framesSent') ?? 0) -
+					(numericStat(first, 'framesSent') ?? 0),
+				framesPerSecond: second.framesPerSecond,
+				bitrateKbps:
+					measurementIntervalMs > 0
+						? Math.round((bytesSentDelta * 8) / measurementIntervalMs)
+						: undefined,
+				averageEncodeTimeMs:
+					framesEncodedDelta > 0
+						? Math.round(
+								(totalEncodeTimeDelta / framesEncodedDelta) * 1000 * 100,
+							) / 100
+						: undefined,
+				qualityLimitationReason: second.qualityLimitationReason,
+				qualityLimitationDurations: second.qualityLimitationDurations,
+				encoderImplementation: second.encoderImplementation,
+				codecMimeType: codec?.mimeType,
+				powerEfficientEncoder: second.powerEfficientEncoder,
+				degradationPreference: parameters?.degradationPreference,
+				framesDroppedDelta:
+					(numericStat(second, 'framesDropped') ?? 0) -
+					(numericStat(first, 'framesDropped') ?? 0),
+				framesDiscardedOnSendDelta:
+					(numericStat(second, 'framesDiscardedOnSend') ?? 0) -
+					(numericStat(first, 'framesDiscardedOnSend') ?? 0),
+				framesDroppedOnSendDelta:
+					(numericStat(second, 'framesDroppedOnSend') ?? 0) -
+					(numericStat(first, 'framesDroppedOnSend') ?? 0),
+			});
+		} catch (error) {
+			console.error(
+				'[iPad Benchmark] Failed to collect sender statistics',
+				error,
+			);
 		}
 	}
 }

@@ -1,0 +1,105 @@
+#!/bin/bash
+# Temporary VP8 A/B runner. It delegates display and host ownership to ipad.
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+IPAD_SCRIPT="$REPO_DIR/scripts/ipad"
+STATE_DIR="/tmp/ipad-display"
+PATTERN_SOURCE="$REPO_DIR/scripts/ipad-benchmark-pattern.m"
+PATTERN_BIN="$STATE_DIR/ipad-benchmark-pattern"
+PATTERN_PID_FILE="$STATE_DIR/benchmark-pattern.pid"
+DISPLAY_ID_FILE="$STATE_DIR/virtual-display-id"
+RESULT_FILE="$STATE_DIR/benchmark.json"
+LOG_FILE="$STATE_DIR/ipad.log"
+
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+
+read_pattern_pid() {
+  [ -f "$PATTERN_PID_FILE" ] || return 1
+  local pid token extra
+  read -r pid token extra < "$PATTERN_PID_FILE" || return 1
+  [[ "$pid" =~ ^[0-9]+$ && -n "$token" && -z "${extra:-}" ]] || return 1
+  printf '%s\n%s\n' "$pid" "$token"
+}
+
+pattern_is_owned() {
+  local record pid token command
+  record="$(read_pattern_pid)" || return 1
+  pid="${record%%$'\n'*}"
+  token="${record#*$'\n'}"
+  kill -0 "$pid" 2>/dev/null || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command" == *"$PATTERN_BIN"* && "$command" == *"--ipad-benchmark-owner $token"* ]]
+}
+
+stop_pattern() {
+  local record pid
+  record="$(read_pattern_pid)" || {
+    rm -f "$PATTERN_PID_FILE"
+    return
+  }
+  pid="${record%%$'\n'*}"
+  if pattern_is_owned; then
+    kill "$pid" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      kill -0 "$pid" 2>/dev/null || {
+        rm -f "$PATTERN_PID_FILE"
+        return
+      }
+      sleep 1
+    done
+    if pattern_is_owned; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$PATTERN_PID_FILE"
+}
+
+ensure_pattern_helper() {
+  if [ ! -f "$PATTERN_SOURCE" ]; then
+    echo "Benchmark pattern source is missing: $PATTERN_SOURCE" >&2
+    return 1
+  fi
+  if [ ! -x "$PATTERN_BIN" ] || [ "$PATTERN_SOURCE" -nt "$PATTERN_BIN" ]; then
+    clang -o "$PATTERN_BIN" "$PATTERN_SOURCE" -framework Cocoa -framework CoreGraphics
+  fi
+}
+
+start_benchmark() {
+  local mode="$1"
+  case "$mode" in
+    2048|2304) ;;
+    *)
+      echo "Usage: ipad-benchmark [2048|2304|stop]" >&2
+      return 1
+      ;;
+  esac
+
+  stop_pattern
+  "$IPAD_SCRIPT" stop
+  rm -f "$RESULT_FILE"
+  ensure_pattern_helper
+
+  IPAD_BENCHMARK=1 IPAD_BENCHMARK_CAPTURE="$mode" "$IPAD_SCRIPT" start
+
+  local owner_token
+  owner_token="$(uuidgen 2>/dev/null || date '+%s')-$$"
+  "$PATTERN_BIN" --display-id-file "$DISPLAY_ID_FILE" \
+    --ipad-benchmark-owner "$owner_token" >> "$LOG_FILE" 2>&1 &
+  printf '%s %s\n' "$!" "$owner_token" > "$PATTERN_PID_FILE"
+  echo "Benchmark $mode is ready; connect the existing iPad viewer to collect one 10-second sender sample."
+}
+
+case "${1:-}" in
+  2048|2304) start_benchmark "$1" ;;
+  stop)
+    stop_pattern
+    "$IPAD_SCRIPT" stop
+    ;;
+  *)
+    echo "Usage: ipad-benchmark [2048|2304|stop]" >&2
+    exit 1
+    ;;
+esac

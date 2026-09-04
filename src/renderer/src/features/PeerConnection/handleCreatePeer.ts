@@ -74,6 +74,12 @@ export default function handleCreatePeer(
 					handlePeerOnData(peerConnection, data);
 				});
 
+				if (peerConnection.isIpadBenchmark) {
+					peerConnection.peer.on('connect', () => {
+						void peerConnection.writeIpadBenchmarkResult();
+					});
+				}
+
 				// ensure cleanup on peer end/error to prevent dangling helper window
 				peerConnection.peer.on('close', () => {
 					peerConnection.selfDestroy();

@@ -19,6 +19,7 @@ const IPAD_DISPLAY_HEIGHT = 1200;
 // Keep the 1600x1200 desktop geometry while capturing enough backing pixels for text.
 const IPAD_CAPTURE_WIDTH = 2304;
 const IPAD_CAPTURE_HEIGHT = 1728;
+const benchmarkResultFile = '/tmp/ipad-display/benchmark.json';
 const displayIDStateFile =
 	process.env.IPAD_DISPLAY_ID_FILE ?? '/tmp/ipad-display/virtual-display-id';
 const readyStateFile =
@@ -32,7 +33,30 @@ type VirtualDisplaySource = {
 	height: number;
 	captureWidth: number;
 	captureHeight: number;
+	benchmarkEnabled?: true;
 };
+
+type IpadBenchmarkConfig = {
+	captureWidth: number;
+	captureHeight: number;
+};
+
+function getIpadBenchmarkConfig(): IpadBenchmarkConfig | null {
+	if (process.env.IPAD_BENCHMARK !== '1') return null;
+
+	switch (process.env.IPAD_BENCHMARK_CAPTURE) {
+		case '2048':
+			return { captureWidth: 2048, captureHeight: 1536 };
+		case '2304':
+			return { captureWidth: 2304, captureHeight: 1728 };
+		default:
+			throw new Error(
+				'iPad benchmark requires IPAD_BENCHMARK_CAPTURE to be 2048 or 2304',
+			);
+	}
+}
+
+const ipadBenchmarkConfig = getIpadBenchmarkConfig();
 
 let virtualDisplay: VirtualDisplaySource | null = null;
 let sharingSession: SharingSession | null = null;
@@ -116,8 +140,9 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 		displayID: expectedDisplayID,
 		width: display.bounds.width,
 		height: display.bounds.height,
-		captureWidth: IPAD_CAPTURE_WIDTH,
-		captureHeight: IPAD_CAPTURE_HEIGHT,
+		captureWidth: ipadBenchmarkConfig?.captureWidth ?? IPAD_CAPTURE_WIDTH,
+		captureHeight: ipadBenchmarkConfig?.captureHeight ?? IPAD_CAPTURE_HEIGHT,
+		...(ipadBenchmarkConfig ? { benchmarkEnabled: true as const } : {}),
 	};
 }
 
@@ -217,9 +242,27 @@ function registerIpadIPCHandlers(): void {
 			height: virtualDisplay.height,
 			captureWidth: virtualDisplay.captureWidth,
 			captureHeight: virtualDisplay.captureHeight,
+			...(virtualDisplay.benchmarkEnabled ? { benchmarkEnabled: true } : {}),
 		};
 	});
 	ipcMain.handle(IpcEvents.GetAppLanguage, () => 'en');
+	if (ipadBenchmarkConfig) {
+		ipcMain.on(IpcEvents.IpadBenchmarkResult, (_, result: unknown) => {
+			writeFileSync(
+				benchmarkResultFile,
+				`${JSON.stringify(
+					{
+						requestedCapture: ipadBenchmarkConfig,
+						result,
+					},
+					null,
+					2,
+				)}\n`,
+				'utf8',
+			);
+			console.log(`[iPad Benchmark] Wrote ${benchmarkResultFile}`);
+		});
+	}
 	ipcMain.handle(IpcEvents.DisconnectDeviceById, (_, deviceID: string) =>
 		getDeskreenGlobal().connectedDevicesService.disconnectDeviceByID(deviceID),
 	);
