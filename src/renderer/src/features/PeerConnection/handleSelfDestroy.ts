@@ -6,6 +6,7 @@ export default function handleSelfDestroy(
 	peerConnection: PeerConnection,
 ): void {
 	peerConnection.stopStallDiagnostics();
+	peerConnection.stopCaptureTrackEndedRecovery();
 	peerConnection.partner = NullUser;
 	window.electron.ipcRenderer.invoke(
 		IpcEvents.DisconnectDeviceById,

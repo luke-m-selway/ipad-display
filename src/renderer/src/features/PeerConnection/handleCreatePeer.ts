@@ -10,6 +10,7 @@ export default function handleCreatePeer(
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
 		peerConnection.stopStallDiagnostics();
+		peerConnection.stopCaptureTrackEndedRecovery();
 		// cleanup existing peer before creating new one
 		if (peerConnection.peer !== NullSimplePeer) {
 			try {
@@ -85,6 +86,14 @@ export default function handleCreatePeer(
 					console.error('peerConnection peer error', e);
 					peerConnection.selfDestroy();
 				});
+				const captureTrack = peerConnection.localStream?.getVideoTracks()[0];
+				if (captureTrack) {
+					peerConnection.watchIpadCaptureTrackEnded(captureTrack);
+				}
+				if (peerConnection.isSelfDestroying) {
+					resolve(undefined);
+					return;
+				}
 				const peer = peerConnection.peer;
 				void startIpadStallDiagnostics(peerConnection).then((cleanup) => {
 					if (!cleanup) return;

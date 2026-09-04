@@ -8,6 +8,7 @@ import { LocalPeerUser } from '../../../../common/LocalPeerUser';
 import type { SendEncryptedMessagePayload } from '../../../../common/SendEncryptedMessagePayload';
 import { handleRecieveEncryptedMessage } from '../../utils/handleRecieveEncryptedMessage';
 import { prepare as prepareMessage } from '../../utils/message';
+import watchCaptureTrackEnded from './captureTrackEndedRecovery';
 import getDesktopSourceStreamBySourceID from './getDesktopSourceStreamBySourceID';
 import handleCreatePeer from './handleCreatePeer';
 import handleSelfDestroy from './handleSelfDestroy';
@@ -57,6 +58,8 @@ export default class PeerConnection {
 	sourceCaptureSize: DisplaySize | undefined;
 	beforeunloadHandler: (() => void) | null = null;
 	stallDiagnosticsCleanup: (() => void) | null = null;
+	captureTrackEndedCleanup: (() => void) | null = null;
+	isSelfDestroying = false;
 
 	constructor(
 		roomID: string,
@@ -190,6 +193,7 @@ export default class PeerConnection {
 
 				// store reference to old stream before replacement
 				const oldStream = this.localStream;
+				this.stopCaptureTrackEndedRecovery();
 
 				// replace the track in the existing peer
 				// replaceTrack will add the new track to the old stream
@@ -209,6 +213,7 @@ export default class PeerConnection {
 				// update local stream reference to the new stream
 				// the new stream's track is now being used in the peer connection
 				this.localStream = newStream;
+				this.watchIpadCaptureTrackEnded(newVideoTrack);
 
 				// update sourceDisplaySize from actual stream to ensure correct resolution
 				// this is critical when switching sources to get the actual stream dimensions
@@ -278,6 +283,8 @@ export default class PeerConnection {
 	}
 
 	selfDestroy(): void {
+		if (this.isSelfDestroying) return;
+		this.isSelfDestroying = true;
 		handleSelfDestroy(this);
 	}
 
@@ -325,6 +332,24 @@ export default class PeerConnection {
 	stopStallDiagnostics(): void {
 		this.stallDiagnosticsCleanup?.();
 		this.stallDiagnosticsCleanup = null;
+	}
+
+	watchIpadCaptureTrackEnded(track: MediaStreamTrack): void {
+		this.stopCaptureTrackEndedRecovery();
+		if (!this.sourceCaptureSize) return;
+
+		this.captureTrackEndedCleanup = watchCaptureTrackEnded(
+			track,
+			() =>
+				!this.isSelfDestroying &&
+				this.localStream?.getVideoTracks()[0] === track,
+			() => this.selfDestroy(),
+		);
+	}
+
+	stopCaptureTrackEndedRecovery(): void {
+		this.captureTrackEndedCleanup?.();
+		this.captureTrackEndedCleanup = null;
 	}
 
 	toggleLockRoom(isConnected: boolean): void {
