@@ -39,9 +39,12 @@
         };
 
         let partner = null;
+        let peer = null;
         let deviceDetailsSent = false;
         let isStreaming = false;
         let lastFullscreenGestureAt = 0;
+        let hasConnectedBefore = false;
+        let joinAttempt = 0;
 
         const setStatus = (text, isStreaming = false) => {
           status.textContent = text;
@@ -91,7 +94,6 @@
           setStatus('Viewer assets failed to load');
           return;
         }
-        const peer = new SimplePeer({ initiator: false, config: { iceServers: [] } });
         const socket = connectSocket(window.location.origin, {
           query: { roomId: ROOM_ID },
           forceNew: true,
@@ -105,31 +107,63 @@
           });
         };
 
-        peer.on('signal', (signalData) => {
-          sendMessage('CALL_ACCEPTED', { signalData });
-        });
+        const createPeer = () => {
+          const nextPeer = new SimplePeer({ initiator: false, config: { iceServers: [] } });
+          peer = nextPeer;
 
-        peer.on('stream', (stream) => {
-          video.srcObject = stream;
-          void video.play().catch(() => {
-            console.debug('[iPad Viewer] Safari deferred autoplay');
+          nextPeer.on('signal', (signalData) => {
+            if (peer !== nextPeer) return;
+            sendMessage('CALL_ACCEPTED', { signalData });
           });
-          isStreaming = true;
-          setStatus('Streaming', true);
-          updateFullscreenHint();
-        });
 
-        peer.on('error', (error) => {
-          console.error('[iPad Viewer] simple-peer error', error);
-          setStatus('WebRTC connection failed');
-        });
+          nextPeer.on('stream', (stream) => {
+            if (peer !== nextPeer) return;
+            video.srcObject = stream;
+            void video.play().catch(() => {
+              console.debug('[iPad Viewer] Safari deferred autoplay');
+            });
+            isStreaming = true;
+            setStatus('Streaming', true);
+            updateFullscreenHint();
+          });
+
+          nextPeer.on('error', (error) => {
+            if (peer !== nextPeer) return;
+            console.error('[iPad Viewer] simple-peer error', error);
+            setStatus('WebRTC connection failed');
+          });
+        };
+
+        const resetForSignalingReconnect = () => {
+          partner = null;
+          deviceDetailsSent = false;
+          isStreaming = false;
+          video.srcObject = null;
+          updateFullscreenHint();
+          if (peer) {
+            peer.removeAllListeners();
+            peer.destroy();
+          }
+          createPeer();
+        };
+
+        createPeer();
 
         socket.on('connect', () => {
+          if (hasConnectedBefore) {
+            // A resumed Safari document needs a new answerer for the host's replacement offer.
+            resetForSignalingReconnect();
+          } else {
+            hasConnectedBefore = true;
+          }
           setStatus('Joining display…');
           // Darkwire installs its room handlers shortly after Socket.IO connects.
           // Match the stock viewer's GET_MY_IP -> USER_ENTER ordering.
+          const currentJoinAttempt = ++joinAttempt;
           window.setTimeout(() => {
+            if (!socket.connected || currentJoinAttempt !== joinAttempt) return;
             socket.emit('GET_MY_IP', () => {
+              if (!socket.connected || currentJoinAttempt !== joinAttempt) return;
               socket.emit('USER_ENTER', { username: user.username, ip: '' });
             });
           }, 500);
@@ -154,7 +188,7 @@
         socket.on('MESSAGE', (message) => {
           if (!message || !message.type) return;
           if (message.type === 'CALL_USER') {
-            peer.signal(message.payload.signalData);
+            peer?.signal(message.payload.signalData);
           } else if (message.type === 'ALLOWED_TO_CONNECT') {
             setStatus('Starting stream…');
           } else if (message.type === 'DENY_TO_CONNECT' || message.type === 'DISCONNECT_BY_HOST_MACHINE_USER') {
@@ -163,7 +197,10 @@
         });
 
         socket.on('NOT_ALLOWED', () => setStatus('Display unavailable'));
-        socket.on('disconnect', () => setStatus('Disconnected'));
+        socket.on('disconnect', () => {
+          joinAttempt += 1;
+          setStatus('Disconnected');
+        });
       })();
     </script>
   </body>
