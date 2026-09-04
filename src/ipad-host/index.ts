@@ -205,6 +205,16 @@ function registerIpadIPCHandlers(): void {
 	ipcMain.handle(IpcEvents.GetPort, () => signalingServer.port);
 	ipcMain.handle(IpcEvents.GetSignalingHost, () => `http://${IPAD_BIND_IP}`);
 	ipcMain.handle(
+		IpcEvents.GetIpadStallDiagnosticsEnabled,
+		() => process.env.IPAD_STALL_DIAGNOSTICS === '1',
+	);
+	ipcMain.on(IpcEvents.IpadStallDiagnosticRecord, (_, record: unknown) => {
+		if (process.env.IPAD_STALL_DIAGNOSTICS !== '1') return;
+		if (typeof record !== 'string' || !record.startsWith('[iPad Stall]'))
+			return;
+		console.log(record);
+	});
+	ipcMain.handle(
 		IpcEvents.GetSourceDisplayIDByDesktopCapturerSourceID,
 		(_, sourceID) =>
 			virtualDisplay?.sourceID === sourceID ? virtualDisplay.displayID : '',

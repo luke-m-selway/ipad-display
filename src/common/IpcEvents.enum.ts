@@ -30,6 +30,8 @@ export enum IpcEvents {
 	DestroySharingSessionById = 'destroy-sharing-session-by-id',
 	GetPort = 'get-port',
 	GetSignalingHost = 'get-signaling-host',
+	GetIpadStallDiagnosticsEnabled = 'get-ipad-stall-diagnostics-enabled',
+	IpadStallDiagnosticRecord = 'ipad-stall-diagnostic-record',
 	OpenExternalLink = 'open-external-link',
 	WriteTextToClipboard = 'write-text-to-clipboard',
 	CheckScreenRecordingPermission = 'check-screen-recording-permission',

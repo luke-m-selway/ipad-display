@@ -1,3 +1,4 @@
+import { IpcEvents } from '../../../../common/IpcEvents.enum';
 import type PeerConnection from './index';
 import NullSimplePeer from './NullSimplePeer';
 
@@ -20,15 +21,20 @@ type NumericCounters = {
 
 type StatsEntry = Record<string, unknown>;
 
-type RuntimeProcess = {
-	env?: Record<string, string | undefined>;
-};
+async function isIpadStallDiagnosticsEnabled(): Promise<boolean> {
+	try {
+		return (
+			(await window.electron.ipcRenderer.invoke(
+				IpcEvents.GetIpadStallDiagnosticsEnabled,
+			)) === true
+		);
+	} catch {
+		return false;
+	}
+}
 
-export function isIpadStallDiagnosticsEnabled(): boolean {
-	const runtime = globalThis as typeof globalThis & {
-		process?: RuntimeProcess;
-	};
-	return runtime.process?.env?.IPAD_STALL_DIAGNOSTICS === '1';
+function writeDiagnostic(record: string): void {
+	window.electron.ipcRenderer.send(IpcEvents.IpadStallDiagnosticRecord, record);
 }
 
 function getNumber(
@@ -77,16 +83,16 @@ function writeState(peerConnection: PeerConnection, event: string): void {
 	const track = peerConnection.localStream?.getVideoTracks()[0];
 	const peer = peerConnection.peer as unknown as DiagnosticPeer;
 	const pc = peer._pc;
-	console.log(
+	writeDiagnostic(
 		`[iPad Stall] ${new Date().toISOString()} event=${event} track=${track?.readyState ?? '-'} muted=${track?.muted ?? '-'} pc=${pc?.connectionState ?? '-'} ice=${pc?.iceConnectionState ?? '-'} gathering=${pc?.iceGatheringState ?? '-'} signaling=${pc?.signalingState ?? '-'}`,
 	);
 }
 
-export function startIpadStallDiagnostics(
+export async function startIpadStallDiagnostics(
 	peerConnection: PeerConnection,
-): (() => void) | null {
+): Promise<(() => void) | null> {
 	if (
-		!isIpadStallDiagnosticsEnabled() ||
+		!(await isIpadStallDiagnosticsEnabled()) ||
 		peerConnection.peer === NullSimplePeer
 	)
 		return null;
@@ -110,7 +116,7 @@ export function startIpadStallDiagnostics(
 		writeState(peerConnection, 'signaling-state-change');
 	const onPeerClose = () => writeState(peerConnection, 'simple-peer-close');
 	const onPeerError = (error: Error) =>
-		console.error(
+		writeDiagnostic(
 			`[iPad Stall] ${new Date().toISOString()} event=simple-peer-error message=${error.message}`,
 		);
 
@@ -147,12 +153,12 @@ export function startIpadStallDiagnostics(
 				sent: getNumber(outboundRtp, 'framesSent'),
 				bytes: getNumber(outboundRtp, 'bytesSent'),
 			};
-			console.log(
+			writeDiagnostic(
 				`[iPad Stall] ${new Date().toISOString()} stats track=${track?.readyState ?? '-'} muted=${track?.muted ?? '-'} capture=${formatCounter(counters.captured, previousCounters.captured)} fps=${getNumber(mediaSource, 'framesPerSecond') ?? '-'} encoded=${formatCounter(counters.encoded, previousCounters.encoded)} sent=${formatCounter(counters.sent, previousCounters.sent)} bytes=${formatCounter(counters.bytes, previousCounters.bytes)} size=${getNumber(outboundRtp, 'frameWidth') ?? '-'}x${getNumber(outboundRtp, 'frameHeight') ?? '-'} quality=${getString(outboundRtp, 'qualityLimitationReason') ?? '-'} encoder=${getString(outboundRtp, 'encoderImplementation') ?? getString(codec, 'implementation') ?? '-'}`,
 			);
 			previousCounters = counters;
 		} catch (error) {
-			console.error(
+			writeDiagnostic(
 				`[iPad Stall] ${new Date().toISOString()} event=stats-error message=${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
