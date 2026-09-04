@@ -27,10 +27,32 @@ type SimplePeerWithRTCPeerConnection = {
 type WebRTCStats = RTCStats & Record<string, unknown>;
 
 function reportIpadDiagnostic(
-	kind: 'Capture' | 'Sender',
+	kind: 'Capture' | 'Codec' | 'Sender',
 	values: Record<string, unknown>,
 ): void {
 	window.electron.ipcRenderer.send(IpcEvents.IpadDiagnostic, { kind, values });
+}
+
+function describeCodecs(codecs: RTCRtpCodec[] | undefined): Array<{
+	mimeType: string;
+	clockRate: number;
+	channels?: number;
+	sdpFmtpLine?: string;
+}> {
+	return (codecs ?? []).map((codec) => ({
+		mimeType: codec.mimeType,
+		clockRate: codec.clockRate,
+		channels: codec.channels,
+		sdpFmtpLine: codec.sdpFmtpLine,
+	}));
+}
+
+function isH264Codec(codec: RTCRtpCodec): boolean {
+	return codec.mimeType.toLowerCase() === 'video/h264';
+}
+
+function isVp8Codec(codec: RTCRtpCodec): boolean {
+	return codec.mimeType.toLowerCase() === 'video/vp8';
 }
 
 function getVideoOutboundStats(
@@ -402,18 +424,130 @@ export default class PeerConnection {
 		}
 	}
 
+	applyIpadCodecPreference(): void {
+		if (!this.sourceCaptureSize) return;
+
+		const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
+		let senderCapabilities: RTCRtpCapabilities | null = null;
+		let receiverCapabilities: RTCRtpCapabilities | null = null;
+		let capabilityError: string | undefined;
+		try {
+			senderCapabilities =
+				typeof RTCRtpSender === 'undefined'
+					? null
+					: RTCRtpSender.getCapabilities('video');
+			receiverCapabilities =
+				typeof RTCRtpReceiver === 'undefined'
+					? null
+					: RTCRtpReceiver.getCapabilities('video');
+		} catch (error) {
+			capabilityError = String(error);
+		}
+		const transceiver = pc
+			?.getTransceivers?.()
+			.find((candidate) => candidate.sender.track?.kind === 'video');
+		const h264Codecs = senderCapabilities?.codecs.filter(isH264Codec) ?? [];
+		const values: Record<string, unknown> = {
+			electronVersion: process.versions.electron,
+			chromiumVersion: process.versions.chrome,
+			setCodecPreferencesAvailable:
+				typeof transceiver?.setCodecPreferences === 'function',
+			videoTransceiverExistsImmediatelyAfterAddStream: Boolean(transceiver),
+			signalingState: pc?.signalingState,
+			senderCapabilities: describeCodecs(senderCapabilities?.codecs),
+			receiverCapabilities: describeCodecs(receiverCapabilities?.codecs),
+			h264SenderCapabilities: describeCodecs(h264Codecs),
+			h264ReceiverCapabilities: describeCodecs(
+				receiverCapabilities?.codecs.filter(isH264Codec),
+			),
+			vp8SenderCapabilities: describeCodecs(
+				senderCapabilities?.codecs.filter(isVp8Codec),
+			),
+			vp8ReceiverCapabilities: describeCodecs(
+				receiverCapabilities?.codecs.filter(isVp8Codec),
+			),
+			capabilityError,
+		};
+
+		if (!pc || !transceiver) {
+			values.status = 'default-negotiation';
+			values.reason = 'video transceiver is unavailable after addStream';
+			reportIpadDiagnostic('Codec', values);
+			return;
+		}
+		if (typeof transceiver.setCodecPreferences !== 'function') {
+			values.status = 'default-negotiation';
+			values.reason = 'RTCRtpTransceiver.setCodecPreferences is unavailable';
+			reportIpadDiagnostic('Codec', values);
+			return;
+		}
+		if (!senderCapabilities) {
+			values.status = 'default-negotiation';
+			values.reason = 'RTCRtpSender video capabilities are unavailable';
+			reportIpadDiagnostic('Codec', values);
+			return;
+		}
+		if (h264Codecs.length === 0) {
+			values.status = 'default-negotiation';
+			values.reason = 'no H264 encoder capability is available';
+			reportIpadDiagnostic('Codec', values);
+			return;
+		}
+
+		const codecPreference = [
+			...h264Codecs,
+			...senderCapabilities.codecs.filter((codec) => !isH264Codec(codec)),
+		];
+
+		try {
+			transceiver.setCodecPreferences(codecPreference);
+			values.status = 'applied';
+			values.appliedPreference = describeCodecs(codecPreference);
+		} catch (error) {
+			values.status = 'default-negotiation';
+			values.reason = `setCodecPreferences failed: ${String(error)}`;
+		}
+		reportIpadDiagnostic('Codec', values);
+	}
+
 	async logIpadSenderDiagnostics(): Promise<void> {
 		if (!this.sourceCaptureSize) return;
 		const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
 		if (!pc?.getStats) return;
 
+		try {
+			await this.logIpadSenderDiagnosticSample(pc, 'startup-2s', 2000);
+		} catch (error) {
+			reportIpadDiagnostic('Sender', {
+				sample: 'startup-2s',
+				status: `Unable to collect outbound video statistics: ${String(error)}`,
+			});
+			return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 2000));
+		try {
+			await this.logIpadSenderDiagnosticSample(pc, 'settled-4s', 4000);
+		} catch (error) {
+			reportIpadDiagnostic('Sender', {
+				sample: 'settled-4s',
+				status: `Unable to collect outbound video statistics: ${String(error)}`,
+			});
+		}
+	}
+
+	async logIpadSenderDiagnosticSample(
+		pc: RTCPeerConnection,
+		sample: string,
+		durationMs: number,
+	): Promise<void> {
 		const firstReport = await pc.getStats();
 		const first = getVideoOutboundStats(firstReport);
-		await new Promise((resolve) => setTimeout(resolve, 2000));
+		await new Promise((resolve) => setTimeout(resolve, durationMs));
 		const secondReport = await pc.getStats();
 		const second = getVideoOutboundStats(secondReport);
 		if (!second) {
 			reportIpadDiagnostic('Sender', {
+				sample,
 				status: 'No outbound video statistics are available',
 			});
 			return;
@@ -440,6 +574,7 @@ export default class PeerConnection {
 		const parameters = sender?.getParameters();
 
 		reportIpadDiagnostic('Sender', {
+			sample,
 			frameWidth: second.frameWidth,
 			frameHeight: second.frameHeight,
 			framesPerSecond: second.framesPerSecond,

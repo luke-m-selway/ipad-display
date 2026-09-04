@@ -51,6 +51,9 @@ export default function handleCreatePeer(
 				// TODO: basically here we need a client side simple peer, but we get a nodejs side simple peer
 				if (peerConnection.localStream !== null) {
 					peerConnection.peer.addStream(peerConnection.localStream);
+					// simple-peer defers its first offer until this stack has unwound, so
+					// preference must stay directly after addStream for the iPad experiment.
+					peerConnection.applyIpadCodecPreference();
 					void peerConnection.applyDegradationPreference();
 				}
 

@@ -35,7 +35,7 @@ type VirtualDisplaySource = {
 };
 
 type IpadDiagnostic = {
-	kind: 'Capture' | 'Sender';
+	kind: 'Capture' | 'Codec' | 'Sender';
 	values: Record<string, unknown>;
 };
 
@@ -43,7 +43,9 @@ function isIpadDiagnostic(value: unknown): value is IpadDiagnostic {
 	if (!value || typeof value !== 'object') return false;
 	const diagnostic = value as Partial<IpadDiagnostic>;
 	return (
-		(diagnostic.kind === 'Capture' || diagnostic.kind === 'Sender') &&
+		(diagnostic.kind === 'Capture' ||
+			diagnostic.kind === 'Codec' ||
+			diagnostic.kind === 'Sender') &&
 		Boolean(diagnostic.values) &&
 		typeof diagnostic.values === 'object' &&
 		!Array.isArray(diagnostic.values)
