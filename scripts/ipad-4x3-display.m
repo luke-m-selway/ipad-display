@@ -10,6 +10,8 @@ static const unsigned int kVirtualDisplayProductID = 0x1236;
 static const unsigned int kVirtualDisplayVendorID = 0x3456;
 static const size_t kRequiredDisplayWidth = 1600;
 static const size_t kRequiredDisplayHeight = 1200;
+static const size_t kRequiredBackingWidth = kRequiredDisplayWidth * 2;
+static const size_t kRequiredBackingHeight = kRequiredDisplayHeight * 2;
 
 @class CGVirtualDisplayDescriptor;
 
@@ -103,6 +105,84 @@ static CGDirectDisplayID findExistingVirtualDisplay(void) {
     return matchingDisplay;
 }
 
+static void logDisplayMode(CGDirectDisplayID displayID, NSString *label) {
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+    if (!mode) {
+        NSLog(@"[iPad Display] %@ mode is unavailable for display ID %u", label, displayID);
+        return;
+    }
+
+    NSLog(@"[iPad Display] %@ mode: logical=%zux%zu pixels=%zux%zu refresh=%.2fHz",
+          label,
+          CGDisplayModeGetWidth(mode),
+          CGDisplayModeGetHeight(mode),
+          CGDisplayModeGetPixelWidth(mode),
+          CGDisplayModeGetPixelHeight(mode),
+          CGDisplayModeGetRefreshRate(mode));
+    CGDisplayModeRelease(mode);
+}
+
+static CGDisplayModeRef copyRequiredHiDPIMode(CGDirectDisplayID displayID) {
+    NSDictionary *options = @{
+        (__bridge NSString *)kCGDisplayShowDuplicateLowResolutionModes: @YES
+    };
+    CFArrayRef modes = CGDisplayCopyAllDisplayModes(displayID, (__bridge CFDictionaryRef)options);
+    if (!modes) return NULL;
+
+    CGDisplayModeRef requiredMode = NULL;
+    for (CFIndex index = 0; index < CFArrayGetCount(modes); index += 1) {
+        CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, index);
+        size_t width = CGDisplayModeGetWidth(mode);
+        size_t height = CGDisplayModeGetHeight(mode);
+        size_t pixelWidth = CGDisplayModeGetPixelWidth(mode);
+        size_t pixelHeight = CGDisplayModeGetPixelHeight(mode);
+
+        if (width == kRequiredDisplayWidth || height == kRequiredDisplayHeight ||
+            pixelWidth == kRequiredBackingWidth || pixelHeight == kRequiredBackingHeight) {
+            NSLog(@"[iPad Display] Available relevant mode: logical=%zux%zu pixels=%zux%zu refresh=%.2fHz",
+                  width,
+                  height,
+                  pixelWidth,
+                  pixelHeight,
+                  CGDisplayModeGetRefreshRate(mode));
+        }
+        if (width == kRequiredDisplayWidth && height == kRequiredDisplayHeight &&
+            pixelWidth == kRequiredBackingWidth && pixelHeight == kRequiredBackingHeight) {
+            requiredMode = CGDisplayModeRetain(mode);
+        }
+    }
+    CFRelease(modes);
+    return requiredMode;
+}
+
+static BOOL selectRequiredHiDPIMode(CGDirectDisplayID displayID) {
+    CGDisplayModeRef mode = copyRequiredHiDPIMode(displayID);
+    if (!mode) {
+        NSLog(@"[iPad Display] Required 1600x1200 logical / 3200x2400 pixel mode is not available yet");
+        return NO;
+    }
+
+    CGError result = CGDisplaySetDisplayMode(displayID, mode, NULL);
+    CGDisplayModeRelease(mode);
+    if (result != kCGErrorSuccess) {
+        NSLog(@"[iPad Display] Could not select required HiDPI mode: %d", result);
+        return NO;
+    }
+    return YES;
+}
+
+static void selectAndVerifyRequiredHiDPIMode(CGDirectDisplayID displayID, NSUInteger attemptsRemaining) {
+    selectRequiredHiDPIMode(displayID);
+    logDisplayMode(displayID, @"current");
+    if (attemptsRemaining == 0) return;
+
+    // Ventura can restore a saved mode after the virtual display first appears.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        selectAndVerifyRequiredHiDPIMode(displayID, attemptsRemaining - 1);
+    });
+}
+
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         NSString *stateFilePath = stateFilePathFromArguments(argc, argv);
@@ -124,8 +204,8 @@ int main(int argc, const char * argv[]) {
 
         [descriptor setDispatchQueue:dispatch_get_main_queue()];
         descriptor.name = @"iPad 4:3 Display";
-        descriptor.maxPixelsWide = 2048;
-        descriptor.maxPixelsHigh = 1536;
+        descriptor.maxPixelsWide = kRequiredBackingWidth;
+        descriptor.maxPixelsHigh = kRequiredBackingHeight;
         descriptor.sizeInMillimeters = CGSizeMake(197, 148);
         descriptor.serialNum = kVirtualDisplaySerial;
         descriptor.productID = kVirtualDisplayProductID;
@@ -159,6 +239,8 @@ int main(int argc, const char * argv[]) {
         if (stateFilePath && !writeDisplayID(display.displayID, stateFilePath)) {
             return 1;
         }
+
+        selectAndVerifyRequiredHiDPIMode(display.displayID, 5);
 
         NSLog(@"iPad 4:3 virtual display requested at %zux%zu — display ID %u",
               kRequiredDisplayWidth,

@@ -1,26 +1,54 @@
-import { prepare as prepareMessage } from '../../utils/message';
+import { Socket } from 'socket.io-client';
 import { connectSocket } from '../../../../common/connectSocket';
-import handleCreatePeer from './handleCreatePeer';
-import handleSocket from './handleSocket';
-import { handleRecieveEncryptedMessage } from '../../utils/handleRecieveEncryptedMessage';
-import handleSelfDestroy from './handleSelfDestroy';
-import NullUser from './NullUser';
-import NullSimplePeer from './NullSimplePeer';
-import setDisplaySizeFromLocalStream from './handleSetDisplaySizeFromLocalStream';
 import DesktopCapturerSourceType from '../../../../common/DesktopCapturerSourceType';
+import { Device } from '../../../../common/Device';
 import getAppLanguage from '../../../../common/getAppLanguage';
 import { IpcEvents } from '../../../../common/IpcEvents.enum';
-import getDesktopSourceStreamBySourceID from './getDesktopSourceStreamBySourceID';
-
-import { Device } from '../../../../common/Device';
 import { LocalPeerUser } from '../../../../common/LocalPeerUser';
 import type { SendEncryptedMessagePayload } from '../../../../common/SendEncryptedMessagePayload';
-import { Socket } from 'socket.io-client';
+import { handleRecieveEncryptedMessage } from '../../utils/handleRecieveEncryptedMessage';
+import { prepare as prepareMessage } from '../../utils/message';
+import getDesktopSourceStreamBySourceID from './getDesktopSourceStreamBySourceID';
+import handleCreatePeer from './handleCreatePeer';
+import handleSelfDestroy from './handleSelfDestroy';
+import setDisplaySizeFromLocalStream from './handleSetDisplaySizeFromLocalStream';
+import handleSocket from './handleSocket';
+import NullSimplePeer from './NullSimplePeer';
+import NullUser from './NullUser';
 
 type DisplaySize = { width: number; height: number };
+type IpadDisplaySize = DisplaySize & {
+	captureWidth?: number;
+	captureHeight?: number;
+};
 type SimplePeerWithRTCPeerConnection = {
 	_pc?: RTCPeerConnection;
 };
+type WebRTCStats = RTCStats & Record<string, unknown>;
+
+function getVideoOutboundStats(
+	report: RTCStatsReport,
+): WebRTCStats | undefined {
+	let outbound: WebRTCStats | undefined;
+	report.forEach((stats) => {
+		const candidate = stats as WebRTCStats;
+		if (
+			candidate.type === 'outbound-rtp' &&
+			(candidate.kind === 'video' || candidate.mediaType === 'video')
+		) {
+			outbound = candidate;
+		}
+	});
+	return outbound;
+}
+
+function numericStat(
+	stats: WebRTCStats | undefined,
+	name: string,
+): number | undefined {
+	const value = stats?.[name];
+	return typeof value === 'number' ? value : undefined;
+}
 
 export interface PartnerPeerUser {
 	username: string;
@@ -51,6 +79,7 @@ export default class PeerConnection {
 	onDeviceConnectedCallback: (device: Device) => void;
 	displayID: string;
 	sourceDisplaySize: DisplaySize | undefined;
+	sourceCaptureSize: DisplaySize | undefined;
 	beforeunloadHandler: (() => void) | null = null;
 
 	constructor(
@@ -72,6 +101,7 @@ export default class PeerConnection {
 		this.localStream = null;
 		this.displayID = '';
 		this.sourceDisplaySize = undefined;
+		this.sourceCaptureSize = undefined;
 		this.onDeviceConnectedCallback = () => {
 			// noop until UI layer registers callback
 		};
@@ -101,6 +131,7 @@ export default class PeerConnection {
 
 		// clear old display size when switching sources to ensure new source uses correct dimensions
 		this.sourceDisplaySize = undefined;
+		this.sourceCaptureSize = undefined;
 		this.displayID = '';
 
 		await this.setDisplayIDByDesktopCapturerSourceID();
@@ -114,6 +145,7 @@ export default class PeerConnection {
 		) {
 			// clear display size for window sources
 			this.sourceDisplaySize = undefined;
+			this.sourceCaptureSize = undefined;
 			return;
 		}
 
@@ -129,13 +161,19 @@ export default class PeerConnection {
 	}
 
 	async setDisplaySizeRetreivedFromMainProcess(): Promise<void> {
-		const size: DisplaySize | 'undefined' =
+		const size: IpadDisplaySize | undefined =
 			await window.electron.ipcRenderer.invoke(
 				'get-display-size-by-display-id',
 				this.displayID,
 			);
-		if (size !== 'undefined') {
-			this.sourceDisplaySize = size;
+		if (size) {
+			this.sourceDisplaySize = { width: size.width, height: size.height };
+			if (size.captureWidth && size.captureHeight) {
+				this.sourceCaptureSize = {
+					width: size.captureWidth,
+					height: size.captureHeight,
+				};
+			}
 		}
 	}
 
@@ -152,13 +190,16 @@ export default class PeerConnection {
 					return;
 				}
 
+				const captureSize = this.sourceCaptureSize ?? this.sourceDisplaySize;
+				const captureMultiplier = this.sourceCaptureSize ? 1 : undefined;
 				const newStream = await getDesktopSourceStreamBySourceID(
 					this.desktopCapturerSourceID,
-					this.sourceDisplaySize?.width,
-					this.sourceDisplaySize?.height,
-					0.5,
-					1,
+					captureSize?.width,
+					captureSize?.height,
+					captureMultiplier ?? 0.5,
+					captureMultiplier ?? 1,
 				);
+				this.configureIpadVideoTrack(newStream);
 				const newVideoTrack = newStream.getVideoTracks()[0];
 
 				if (!newVideoTrack) {
@@ -352,5 +393,101 @@ export default class PeerConnection {
 				e,
 			);
 		}
+	}
+
+	async logIpadSenderDiagnostics(): Promise<void> {
+		if (!this.sourceCaptureSize) return;
+		const pc = (this.peer as unknown as SimplePeerWithRTCPeerConnection)?._pc;
+		if (!pc?.getStats) return;
+
+		const firstReport = await pc.getStats();
+		const first = getVideoOutboundStats(firstReport);
+		await new Promise((resolve) => setTimeout(resolve, 2000));
+		const secondReport = await pc.getStats();
+		const second = getVideoOutboundStats(secondReport);
+		if (!second) {
+			console.log('[iPad Sender] No outbound video statistics are available');
+			return;
+		}
+
+		const elapsedSeconds =
+			(numericStat(second, 'timestamp') ?? performance.now()) / 1000 -
+			(numericStat(first, 'timestamp') ?? performance.now() - 2000) / 1000;
+		const bytesDelta =
+			(numericStat(second, 'bytesSent') ?? 0) -
+			(numericStat(first, 'bytesSent') ?? 0);
+		const framesEncodedDelta =
+			(numericStat(second, 'framesEncoded') ?? 0) -
+			(numericStat(first, 'framesEncoded') ?? 0);
+		const encodeTimeDelta =
+			(numericStat(second, 'totalEncodeTime') ?? 0) -
+			(numericStat(first, 'totalEncodeTime') ?? 0);
+		const codec = second.codecId
+			? (secondReport.get(second.codecId as string) as WebRTCStats | undefined)
+			: undefined;
+		const sender = pc
+			.getSenders()
+			.find((candidate) => candidate.track?.kind === 'video');
+		const parameters = sender?.getParameters();
+
+		console.log('[iPad Sender] Bounded diagnostics:', {
+			frameWidth: second.frameWidth,
+			frameHeight: second.frameHeight,
+			framesPerSecond: second.framesPerSecond,
+			framesEncoded: second.framesEncoded,
+			framesSent: second.framesSent,
+			bitrateKbps:
+				elapsedSeconds > 0
+					? Math.round((bytesDelta * 8) / elapsedSeconds / 1000)
+					: undefined,
+			averageEncodeTimeMs:
+				framesEncodedDelta > 0
+					? Math.round((encodeTimeDelta / framesEncodedDelta) * 1000 * 100) /
+						100
+					: undefined,
+			qualityLimitationReason: second.qualityLimitationReason,
+			qualityLimitationDurations: second.qualityLimitationDurations,
+			qpSum: second.qpSum,
+			codecMimeType: codec?.mimeType,
+			codecFmtp: codec?.sdpFmtpLine,
+			encoderImplementation: second.encoderImplementation,
+			powerEfficientEncoder: second.powerEfficientEncoder,
+			degradationPreference: parameters?.degradationPreference,
+			encodings: parameters?.encodings?.map((encoding) => ({
+				scaleResolutionDownBy: encoding.scaleResolutionDownBy,
+				maxBitrate: encoding.maxBitrate,
+				maxFramerate: encoding.maxFramerate,
+			})),
+		});
+	}
+
+	configureIpadVideoTrack(stream = this.localStream): void {
+		if (!this.sourceCaptureSize) return;
+		const track = stream?.getVideoTracks()[0];
+		if (!track) return;
+
+		try {
+			track.contentHint = 'text';
+			if (track.contentHint !== 'text') track.contentHint = 'detail';
+		} catch (error) {
+			console.warn(
+				'[iPad Capture] Chromium rejected screen content hints',
+				error,
+			);
+		}
+
+		const settings = track.getSettings() as MediaTrackSettings & {
+			resizeMode?: string;
+		};
+		const capabilities = track.getCapabilities?.();
+		console.log('[iPad Capture] Video track:', {
+			width: settings.width,
+			height: settings.height,
+			frameRate: settings.frameRate,
+			resizeMode: settings.resizeMode,
+			contentHint: track.contentHint,
+			widthCapabilities: capabilities?.width,
+			heightCapabilities: capabilities?.height,
+		});
 	}
 }

@@ -72,6 +72,10 @@ export default function handleCreatePeer(
 					handlePeerOnData(peerConnection, data);
 				});
 
+				peerConnection.peer.on('connect', () => {
+					void peerConnection.logIpadSenderDiagnostics();
+				});
+
 				// ensure cleanup on peer end/error to prevent dangling helper window
 				peerConnection.peer.on('close', () => {
 					peerConnection.selfDestroy();
