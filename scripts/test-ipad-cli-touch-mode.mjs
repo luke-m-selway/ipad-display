@@ -86,6 +86,13 @@ test('doctor is exposed without becoming a lifecycle operation', () => {
 	assert.doesNotMatch(doctorScript, /clear_stale_record|stop_stack|terminate_owned_process|rm -f "\$MODE_FILE"/);
 });
 
+test('doctor does not execute a stale touch helper', () => {
+	assert.match(
+		doctorScript,
+		/if \[\[ "\$REPO_DIR\/scripts\/ipad-input-helper\.m" -nt "\$INPUT_HELPER" \]\]; then[\s\S]*?warn "Touch input helper is older than its source; run \.\/scripts\/install before checking Accessibility"[\s\S]*?else[\s\S]*?"\$INPUT_HELPER" --accessibility-check/,
+	);
+});
+
 test('installer pins and checksum-verifies the Intel Node runtime', () => {
 	assert.match(installScript, /NODE_VERSION="v23\.11\.1"/);
 	assert.match(installScript, /SHASUMS256\.txt/);
