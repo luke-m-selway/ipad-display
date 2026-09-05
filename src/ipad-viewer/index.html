@@ -83,7 +83,7 @@
 
         // iPadOS WebKit can expose element fullscreen only through its legacy
         // state properties, leaving the modern element slots unset.
-        const isFullscreen = () =>
+        const isElementFullscreen = () =>
           Boolean(
             document.fullscreenElement ||
             document.webkitFullscreenElement ||
@@ -91,8 +91,20 @@
             document.webkitIsFullScreen,
           );
 
+        const matchesDisplayMode = (mode) =>
+          typeof window.matchMedia === 'function' &&
+          window.matchMedia(`(display-mode: ${mode})`).matches;
+
+        const isStandaloneViewer = () =>
+          window.navigator.standalone === true ||
+          matchesDisplayMode('standalone') ||
+          matchesDisplayMode('fullscreen');
+
+        const isImmersiveViewer = () =>
+          isStandaloneViewer() || isElementFullscreen();
+
         const updateFullscreenHint = () => {
-          fullscreenHint.hidden = !isStreaming || Boolean(isFullscreen());
+          fullscreenHint.hidden = !isStreaming || isImmersiveViewer();
         };
 
         const videoPoint = (touch) => {
@@ -127,7 +139,7 @@
         };
 
         const canSendTouch = () =>
-          touchEnabled && macControlEnabled && isStreaming && Boolean(isFullscreen()) && lifecycle &&
+          touchEnabled && macControlEnabled && isStreaming && isImmersiveViewer() && lifecycle &&
           lifecycle.phase === 'streaming' && lifecycle.viewer?.socketId === socket.id;
 
         const emitInput = (action, point, deltaX, deltaY) => {
@@ -270,7 +282,7 @@
         };
 
         const requestFullscreenFromGesture = () => {
-          if (isFullscreen()) return;
+          if (isImmersiveViewer()) return;
 
           if (requestElementFullscreen()) return;
           // Never enter native video fullscreen until the server has confirmed
@@ -282,7 +294,7 @@
 
         const enterFullscreenOnTap = (event) => {
           if (touchEnabled) event.preventDefault();
-          if (!isStreaming || isFullscreen()) return;
+          if (!isStreaming || isImmersiveViewer()) return;
 
           // Safari emits both pointerup and touchend for one finger gesture.
           // Let the first event retain user activation, then ignore its twin.
@@ -333,7 +345,7 @@
         // stream setup so requesting it never recreates the PeerConnection.
         installFullscreenEntryTarget();
         const handleFullscreenChange = () => {
-          if (!isFullscreen()) releaseActiveDrag();
+          if (!isImmersiveViewer()) releaseActiveDrag();
           updateFullscreenHint();
         };
         document.addEventListener('fullscreenchange', handleFullscreenChange);

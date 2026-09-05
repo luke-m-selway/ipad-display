@@ -55,6 +55,8 @@ function createViewerHarness({
 	storage = new Map(),
 	viewerIds = ['viewer-id'],
 	elementFullscreen = 'unprefixed',
+	standalone = false,
+	displayModes = [],
 } = {}) {
 	const socketHandlers = new Map();
 	const emitted = [];
@@ -173,6 +175,10 @@ function createViewerHarness({
 		SimplePeer: FakePeer,
 		io: () => socket,
 		location: { origin: 'http://192.168.2.1:3131' },
+		navigator: { standalone },
+		matchMedia(query) {
+			return { matches: displayModes.includes(query) };
+		},
 		screen: { width: 1024, height: 768 },
 		localStorage: {
 			getItem(key) {
@@ -211,6 +217,7 @@ function createViewerHarness({
 		emitted,
 		count,
 		status,
+		fullscreenHint,
 		storage,
 		document,
 		touchSurface,
@@ -463,13 +470,52 @@ test('WebKit fullscreen boolean enables the touch gate', () => {
 	assert.deepEqual(inputActions(harness), ['click']);
 });
 
-test('touch input remains blocked until an element fullscreen state is observed', () => {
+test('iOS Home Screen standalone mode is immersive without element fullscreen', () => {
+	const harness = createViewerHarness({ standalone: true });
+	activateTouchStreaming(harness);
+
+	tapTouchSurface(harness);
+
+	assert.equal(harness.fullscreenHint.hidden, true);
+	assert.equal(harness.fullscreenCalls.unprefixed, 0);
+	assert.deepEqual(inputActions(harness), ['click']);
+});
+
+for (const mode of ['standalone', 'fullscreen']) {
+	test(`display-mode ${mode} is immersive without element fullscreen`, () => {
+		const harness = createViewerHarness({
+			displayModes: [`(display-mode: ${mode})`],
+		});
+		activateTouchStreaming(harness);
+
+		tapTouchSurface(harness);
+
+		assert.equal(harness.fullscreenHint.hidden, true);
+		assert.deepEqual(inputActions(harness), ['click']);
+	});
+}
+
+test('ordinary browser touch input remains blocked until element fullscreen is observed', () => {
 	const harness = createViewerHarness();
 	activateTouchStreaming(harness);
 
 	tapTouchSurface(harness);
 
+	assert.equal(harness.fullscreenHint.hidden, false);
 	assert.deepEqual(inputActions(harness), []);
+});
+
+test('restoring Mac control from standalone mode does not request browser fullscreen', () => {
+	const harness = createViewerHarness({ standalone: true });
+	activateTouchStreaming(harness);
+
+	harness.touchControl.dispatch('click');
+	assert.equal(harness.touchControl.textContent, 'Mac');
+	harness.touchControl.dispatch('click');
+
+	assert.equal(harness.touchControl.textContent, 'iPad');
+	assert.equal(harness.touchSurface.hidden, false);
+	assert.equal(harness.fullscreenCalls.unprefixed, 0);
 });
 
 test('the local touch control releases an active drag, blocks input while disabled, and restores Mac control', () => {
