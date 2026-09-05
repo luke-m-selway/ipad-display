@@ -31,8 +31,12 @@ function createEventTarget(properties = {}) {
 				touches: [],
 				changedTouches: [],
 				defaultPrevented: false,
+				propagationStopped: false,
 				preventDefault() {
 					this.defaultPrevented = true;
+				},
+				stopPropagation() {
+					this.propagationStopped = true;
 				},
 				...payload,
 			};
@@ -113,6 +117,11 @@ function createViewerHarness({
 	const fullscreenCalls = { unprefixed: 0, prefixed: 0, nativeVideo: 0 };
 	const video = createEventTarget({
 		srcObject: null,
+		videoWidth: 100,
+		videoHeight: 100,
+		getBoundingClientRect() {
+			return { left: 0, top: 0, width: 100, height: 100 };
+		},
 		play() {
 			return Promise.resolve();
 		},
@@ -120,6 +129,14 @@ function createViewerHarness({
 	const status = { hidden: false, textContent: '' };
 	const fullscreenHint = { hidden: true };
 	const touchSurface = createEventTarget({ hidden: true });
+	const touchControl = createEventTarget({
+		hidden: true,
+		textContent: '',
+		attributes: new Map(),
+		setAttribute(name, value) {
+			this.attributes.set(name, value);
+		},
+	});
 	const document = createEventTarget({
 		fullscreenElement: null,
 		webkitFullscreenElement: null,
@@ -127,6 +144,7 @@ function createViewerHarness({
 			return {
 				video,
 				'touch-surface': touchSurface,
+				'touch-control': touchControl,
 				status,
 				'fullscreen-hint': fullscreenHint,
 			}[id];
@@ -194,6 +212,7 @@ function createViewerHarness({
 		storage,
 		document,
 		touchSurface,
+		touchControl,
 		video,
 		fullscreenCalls,
 	};
@@ -226,6 +245,16 @@ function activateTouchStreaming(harness) {
 	connectAndAuthorize(harness, lifecycle({ phase: 'streaming' }));
 	harness.peers[0].emit('stream', {});
 	harness.socketHandlers.get('IPAD_TOUCH_CAPABILITY')({ enabled: true });
+}
+
+function touch(identifier, clientX, clientY) {
+	return { identifier, clientX, clientY };
+}
+
+function inputActions(harness) {
+	return harness.emitted
+		.filter((entry) => entry.event === 'IPAD_INPUT')
+		.map((entry) => entry.payload.action);
 }
 
 test('viewer waits for an authoritative owner before sending DEVICE_DETAILS', () => {
@@ -375,6 +404,8 @@ test('touch mode uses unprefixed element fullscreen and never native video fulls
 	assert.equal(harness.fullscreenCalls.unprefixed, 1);
 	assert.equal(harness.fullscreenCalls.nativeVideo, 0);
 	assert.equal(harness.touchSurface.hidden, false);
+	assert.equal(harness.touchControl.hidden, false);
+	assert.equal(harness.touchControl.textContent, 'iPad');
 });
 
 test('touch mode uses the WebKit-prefixed element fullscreen API when needed', () => {
@@ -401,6 +432,58 @@ test('active touch mode keeps the video out of the gesture path and suppresses n
 	assert.match(viewerHtml, /#touch-surface[^}]*touch-action: none/);
 });
 
+test('the local touch control releases an active drag, blocks input while disabled, and restores Mac control', () => {
+	const harness = createViewerHarness({ elementFullscreen: 'unprefixed' });
+	activateTouchStreaming(harness);
+	harness.document.fullscreenElement = harness.document.documentElement;
+
+	harness.touchSurface.dispatch('touchstart', {
+		touches: [touch(1, 10, 10)],
+	});
+	harness.touchSurface.dispatch('touchmove', {
+		touches: [touch(1, 30, 10)],
+	});
+	assert.deepEqual(inputActions(harness), ['down', 'drag']);
+
+	const disable = harness.touchControl.dispatch('click');
+	assert.equal(disable.defaultPrevented, true);
+	assert.equal(disable.propagationStopped, true);
+	assert.deepEqual(inputActions(harness), ['down', 'drag', 'up']);
+	assert.equal(harness.touchSurface.hidden, true);
+	assert.equal(harness.touchControl.textContent, 'Mac');
+
+	harness.touchSurface.dispatch('touchend', {
+		changedTouches: [touch(1, 30, 10)],
+	});
+	assert.deepEqual(inputActions(harness), ['down', 'drag', 'up']);
+
+	harness.document.fullscreenElement = null;
+	harness.touchControl.dispatch('click');
+	assert.equal(harness.touchSurface.hidden, false);
+	assert.equal(harness.touchControl.textContent, 'iPad');
+	assert.equal(harness.fullscreenCalls.unprefixed, 1);
+
+	harness.touchSurface.dispatch('touchstart', {
+		touches: [touch(2, 20, 20)],
+	});
+	harness.touchSurface.dispatch('touchend', {
+		changedTouches: [touch(2, 20, 20)],
+	});
+	assert.deepEqual(inputActions(harness), ['down', 'drag', 'up', 'click']);
+});
+
+test('touch-control button gestures never become Mac input', () => {
+	const harness = createViewerHarness();
+	activateTouchStreaming(harness);
+	harness.document.fullscreenElement = harness.document.documentElement;
+
+	harness.touchControl.dispatch('touchstart');
+	harness.touchControl.dispatch('click');
+
+	assert.deepEqual(inputActions(harness), []);
+	assert.equal(harness.touchControl.textContent, 'Mac');
+});
+
 test('display-only mode retains document fullscreen entry and native-video fallback', () => {
 	const harness = createViewerHarness({ elementFullscreen: 'none' });
 	connectAndAuthorize(harness, lifecycle({ phase: 'streaming' }));
@@ -410,6 +493,7 @@ test('display-only mode retains document fullscreen entry and native-video fallb
 	harness.document.dispatch('touchend');
 
 	assert.equal(harness.touchSurface.hidden, true);
+	assert.equal(harness.touchControl.hidden, true);
 	assert.equal(harness.document.listenerCount('touchend'), 1);
 	assert.equal(harness.fullscreenCalls.nativeVideo, 1);
 });

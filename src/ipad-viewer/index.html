@@ -15,6 +15,8 @@
       video { display: block; object-fit: contain; }
       #touch-surface { position: fixed; inset: 0; z-index: 1; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
       #touch-surface[hidden] { display: none; }
+      #touch-control { position: fixed; z-index: 3; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); min-width: 56px; min-height: 44px; border: 1px solid rgba(255, 255, 255, .45); border-radius: 10px; background: rgba(24, 24, 24, .86); color: #fff; font: 600 14px -apple-system, sans-serif; }
+      #touch-control[hidden] { display: none; }
       #status { position: fixed; z-index: 2; inset: auto 12px 12px; color: #777; font: 12px -apple-system, sans-serif; pointer-events: none; }
       #status[hidden] { display: none; }
       #fullscreen-hint { position: fixed; z-index: 2; inset: auto 12px 12px; color: #bbb; font: 12px -apple-system, sans-serif; pointer-events: none; }
@@ -24,6 +26,7 @@
   <body>
     <video id="video" autoplay muted playsinline></video>
     <div id="touch-surface" hidden aria-hidden="true"></div>
+    <button id="touch-control" type="button" hidden></button>
     <div id="status">Connecting…</div>
     <div id="fullscreen-hint" hidden>Tap for fullscreen</div>
     <script src="/vendor/socket.io.min.js"></script>
@@ -33,6 +36,7 @@
         const ROOM_ID = 'ipad-main';
         const video = document.getElementById('video');
         const touchSurface = document.getElementById('touch-surface');
+        const touchControl = document.getElementById('touch-control');
         const status = document.getElementById('status');
         const fullscreenHint = document.getElementById('fullscreen-hint');
         const SimplePeer = window['SimplePeer'];
@@ -68,6 +72,7 @@
         let needsFreshPeer = false;
         let touchEnabled = false;
         let touchCapabilityKnown = false;
+        let macControlEnabled = true;
         let touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
         const DRAG_THRESHOLD_PX = 12;
 
@@ -115,7 +120,7 @@
         };
 
         const canSendTouch = () =>
-          touchEnabled && isStreaming && Boolean(isFullscreen()) && lifecycle &&
+          touchEnabled && macControlEnabled && isStreaming && Boolean(isFullscreen()) && lifecycle &&
           lifecycle.phase === 'streaming' && lifecycle.viewer?.socketId === socket.id;
 
         const emitInput = (action, point, deltaX, deltaY) => {
@@ -141,6 +146,11 @@
             emitInput('up', touchGesture.last);
             touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
           }
+        };
+
+        const resetTouchGesture = () => {
+          releaseActiveDrag();
+          touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
         };
 
         const ignoreTouchesUntilLift = () => {
@@ -280,17 +290,36 @@
           document.removeEventListener('touchend', enterFullscreenOnTap);
           touchSurface.removeEventListener('pointerup', enterFullscreenOnTap);
           touchSurface.removeEventListener('touchend', enterFullscreenOnTap);
+          if (touchEnabled && !macControlEnabled) return;
           const target = touchEnabled ? touchSurface : document;
           target.addEventListener('pointerup', enterFullscreenOnTap);
           target.addEventListener('touchend', enterFullscreenOnTap, { passive: false });
         };
 
+        const updateTouchControl = () => {
+          touchSurface.hidden = !touchEnabled || !macControlEnabled;
+          touchControl.hidden = !touchEnabled;
+          touchControl.textContent = macControlEnabled ? 'iPad' : 'Mac';
+          touchControl.setAttribute(
+            'aria-label',
+            macControlEnabled ? 'Give control to iPad' : 'Resume Mac control',
+          );
+          installFullscreenEntryTarget();
+        };
+
+        const setMacControlEnabled = (enabled, requestFullscreen = false) => {
+          if (macControlEnabled === enabled) return;
+          if (!enabled) resetTouchGesture();
+          macControlEnabled = enabled;
+          updateTouchControl();
+          if (enabled && requestFullscreen) requestFullscreenFromGesture();
+        };
+
         const setTouchEnabled = (enabled) => {
           touchCapabilityKnown = true;
+          if (!enabled) resetTouchGesture();
           touchEnabled = enabled === true;
-          touchSurface.hidden = !touchEnabled;
-          installFullscreenEntryTarget();
-          if (!touchEnabled) releaseActiveDrag();
+          updateTouchControl();
         };
 
         // Fullscreen requires a real user activation on iPadOS. Keep this outside
@@ -306,6 +335,12 @@
         touchSurface.addEventListener('touchmove', handleTouchMove, { passive: false });
         touchSurface.addEventListener('touchend', handleTouchEnd, { passive: false });
         touchSurface.addEventListener('touchcancel', handleTouchCancel, { passive: false });
+        touchControl.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!touchEnabled) return;
+          setMacControlEnabled(!macControlEnabled, true);
+        });
 
         // This is the stock Deskreen viewer contract: a non-initiating
         // simple-peer receives CALL_USER signals and returns CALL_ACCEPTED signals.
