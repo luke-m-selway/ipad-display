@@ -1,66 +1,23 @@
 ---
 name: Bug report
-about: You're having technical issues. 🐞 And willing to share more details. If you don't know details, write here https://github.com/pavlobu/deskreen/discussions/68
-labels: 'bug'
+about: Report a reproducible problem in the supported iPad Display setup.
+labels: bug
 ---
 
-<!-- Please use the following issue template or your issue will be closed -->
+## What happened?
 
-## Prerequisites
-
-<!-- If the following boxes are not ALL checked, your issue is likely to be closed -->
-
-- [ ] Using yarn
-- [ ] Using an up-to-date [`master` branch](https://github.com/pavlobu/deskreen/tree/master)
-- [ ] Using latest version of devtools. [Check the docs for how to update](https://electron-react-boilerplate.js.org/docs/dev-tools/)
-- [ ] For issue in production release, add devtools output of `DEBUG_PROD=true yarn build && yarn start`
-
-## Expected Behavior
-
-<!--- What should have happened? -->
-
-## Current Behavior
-
-<!--- What went wrong? -->
-
-## Steps to Reproduce
-
-<!-- Add relevant code and/or a live example -->
-<!-- Add stack traces -->
+## Steps to reproduce
 
 1.
-
 2.
-
 3.
 
-4.
+## Expected result
 
-## Possible Solution (Not obligatory)
+## Supported environment
 
-<!--- Suggest a reason for the bug or how to fix it. -->
-
-## Context
-
-<!--- How has this issue affected you? What are you trying to accomplish? -->
-<!--- Did you make any changes to the boilerplate after cloning it? -->
-<!--- Providing context helps us come up with a solution that is most useful in the real world -->
-
-## Your Environment
-
-<!--- Include as many relevant details about the environment you experienced the bug in -->
-
-- Node version :
-- Deskreen version or branch :
-- Operating System and version :
-- Link to your project :
-
-<!---
-❗️❗️ Also, please consider donating (https://opencollective.com/deskreen) ❗️❗️
-
-Donations will ensure the following:
-
-🔨 Long term maintenance of the project
-🛣 Progress on the roadmap
-🐛 Quick responses to bug reports and help requests
- -->
+- macOS version and Intel Mac model:
+- iPadOS version and viewer type (Safari or Home Screen):
+- Command used (`ipad` or `ipad touch`):
+- Private USB endpoint present (`192.168.2.1`):
+- Relevant `ipad status` / log output:

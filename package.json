@@ -1,10 +1,10 @@
 {
-  "name": "deskreen-ce",
+  "name": "ipad-display",
   "version": "3.2.16",
-  "description": "Screen sharing and present screen: Turn any device into a secondary screen for your computer",
+  "description": "Fixed USB iPad secondary display for Intel macOS Ventura",
   "main": "./out/main/index.js",
-  "author": "deskreen.com",
-  "homepage": "https://electron-vite.org",
+  "author": "Luke M. Selway",
+  "homepage": "https://github.com/luke-m-selway/ipad-display",
   "scripts": {
     "clean": "rm -rf dist out src/client-viewer/dist",
     "format": "biome format --write . --max-diagnostics=none",
@@ -22,15 +22,7 @@
     "buildClientViewer": "cd src/client-viewer && npm run build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
-    "build:win": "npm run build && electron-builder --win",
-    "build:win:ia32": "npm run build && electron-builder --win --ia32",
-    "build:win:arm64": "npm run build && electron-builder --win --arm64",
-    "build:mac": "npm run buildClientViewer && electron-vite build && electron-builder --mac",
-    "build:mac:arm64": "npm run buildClientViewer && electron-vite build && electron-builder --mac --arm64",
-    "build:mac:x64": "npm run buildClientViewer && electron-vite build && electron-builder --mac --x64",
-    "build:linux": "npm run buildClientViewer && electron-vite build && electron-builder --linux",
-    "build:linux:arm64": "npm run buildClientViewer && electron-vite build && electron-builder --linux --arm64",
-    "build:linux:armv7l": "npm run buildClientViewer && electron-vite build && electron-builder --linux --armv7l"
+    "build:mac:x64": "npm run buildClientViewer && electron-vite build && electron-builder --mac --x64"
   },
   "dependencies": {
     "@blueprintjs/core": "^6.3.4",

@@ -1,70 +1,78 @@
 # iPad Display
 
-A lightweight macOS-to-iPad secondary-display setup derived from Deskreen's Chromium desktop-capture → WebRTC path.
+iPad Display turns one supported iPad into a low-latency secondary display for a
+supported Intel Mac running macOS Ventura. It uses a fixed USB/private-network
+link and a dedicated virtual display; it is not a general-purpose remote-desktop
+or cross-platform screen-sharing product.
 
-This repository is intentionally narrow: it targets the validated Intel macOS Ventura setup in this project, using a USB/private-LAN connection to an iPad rather than a general-purpose cross-platform screen-sharing app.
+## Quick start
 
-## Usage
+On the Mac, install the repository dependencies, connect the iPad USB/private
+network, then run the repository script (or place `scripts` on your `PATH` to
+use `ipad` directly):
 
 ```bash
-ipad
-ipad status
-ipad stop
+npm ci
+(cd src/client-viewer && npm ci)
+./scripts/ipad
 ```
 
-`ipad` owns the virtual-display and streaming-host lifecycle. The viewer is served at the fixed private USB address:
+Open `http://192.168.2.1:3131/` on the iPad. For the most direct experience,
+save that page to the iPad Home Screen and launch it as a standalone web app.
 
-```text
-http://192.168.2.1:3131/
-```
+| Command | Result |
+| --- | --- |
+| `ipad` | Start the display-only stack. |
+| `ipad stop` | Stop a display-only stack. |
+| `ipad touch` | Start display plus opt-in touch control. |
+| `ipad touch stop` | Stop a touch stack. |
+| `ipad status` | Report `stopped`, `display-only`, or `touch`. |
 
-The runtime fails rather than silently falling back to another network interface if the expected private link is unavailable.
+Stop the active mode before starting the other one; the script never changes a
+running stack's mode implicitly. Plain `ipad` remains the lowest-complexity
+fallback and never starts the native input helper.
 
-## Current validated checkpoint
+## Touch mode
 
-- logical desktop: `1600x1200`
-- HiDPI backing surface: `3200x2400` (`@2x`)
-- iPad capture/output: `2304x1728`
-- capture request: `15-30 fps`
-- codec: native/default WebRTC negotiation, currently VP8/libvpx
-- `contentHint="text"`
-- `degradationPreference="maintain-resolution"`
-- no explicit bitrate cap
-- no sender framerate cap
-- no SDP munging or explicit codec preference
-- normal runtime diagnostics overhead: zero
+`ipad touch` asks macOS for Accessibility permission when needed. Touch is
+available only from the current streaming viewer and only while it has Mac
+control. The Mac keyboard remains the typing device.
 
-A controlled comparison against `2048x1536` found the `2304x1728` checkpoint modestly sharper without a measurable end-to-end latency regression. The temporary benchmark harness is kept off the production path on `experiment/vp8-ab-benchmark`.
+| iPad gesture | Mac result |
+| --- | --- |
+| Tap | Move the cursor and click. |
+| One-finger drag | Native macOS drag. |
+| Two-finger drag | Scroll. |
+| Three fingers up | Mission Control. |
+| Three fingers left / right | Next / previous Space, matching natural swipe direction. |
+| `iPad` / `Mac` button | Yield touch ownership to iPadOS / resume Mac control. |
 
-## Deferred work
+The saved Home Screen viewer is already immersive, so it does not show the
+fullscreen-entry hint or request browser fullscreen before enabling touch.
+In an ordinary Safari tab, tap once to enter element fullscreen first. The
+`iPad` setting yields the interaction surface to Safari and iPadOS; it does not
+turn the video into a media-control surface.
 
-- [#7](https://github.com/luke-m-selway/ipad-display/issues/7): bounded VP8 bitrate-headroom experiment at the current runtime checkpoint.
-- [#6](https://github.com/luke-m-selway/ipad-display/pull/6): proposal-only native Rust + ScreenCaptureKit + VideoToolbox fallback if the current VP8 path is ever no longer sufficient.
+## Supported setup and boundary
 
-Neither item changes the current runtime unless explicitly resumed.
+- Intel macOS Ventura Mac with Screen Recording permission.
+- iPad on the dedicated USB/private network exposing `192.168.2.1` on the Mac.
+- iPad Safari or a Home Screen standalone viewer.
+- Touch mode additionally requires Accessibility permission for the local input
+  helper.
 
-## Architecture
+The virtual display and Electron host own the lifecycle. The host captures that
+display, serves the viewer only on `192.168.2.1:3131`, and keeps viewer authority
+and input injection generation-bound. The validated checkpoint is a
+1600×1200 logical virtual display with a 3200×2400 HiDPI backing surface and a
+2304×1728 iPad media path.
 
-```text
-ipad
-  ├─ CGVirtualDisplay helper
-  │    └─ 1600x1200 logical / 3200x2400 backing
-  └─ lightweight Electron host
-       ├─ exact virtual-display selection
-       ├─ Chromium desktop capture
-       ├─ WebRTC / simple-peer
-       ├─ private bind: 192.168.2.1:3131
-       └─ minimal Safari viewer on iPad
-```
-
-The design deliberately preserves the low-latency Chromium capture → libwebrtc media path while removing the normal Deskreen host UI, pairing flow, source picker, and other general-purpose behavior from the intended workflow.
-
-## Scope
-
-Current production scope is macOS Ventura on the validated Intel MacBook Pro with the dedicated USB/private-LAN iPad link. Windows/Linux support and general Deskreen behavior are not project goals.
+There is no keyboard forwarding, Pencil support, right click, pinch/zoom,
+momentum, or generic remote-desktop feature set.
 
 ## Upstream and license
 
-This project is derived from [Deskreen CE](https://github.com/pavlobu/deskreen), reviewed from upstream commit `b5dc3d4d1a74ec38091d36578fd84174db3792bc` (Deskreen CE v3.2.16).
-
-Deskreen CE and this derivative are licensed under the **AGPL-3.0**. Upstream copyright and third-party dependency notices remain applicable; see `LICENSE` and the repository history for attribution.
+This project is derived from [Deskreen CE](https://github.com/pavlobu/deskreen),
+reviewed from Deskreen CE v3.2.16. It remains licensed under the
+[AGPL-3.0](LICENSE); upstream copyright and applicable third-party notices are
+preserved.

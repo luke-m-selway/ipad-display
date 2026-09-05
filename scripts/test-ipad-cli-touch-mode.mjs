@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const script = readFileSync('scripts/ipad', 'utf8');
+const readme = readFileSync('README.md', 'utf8');
 
 test('scripts/ipad is valid bash', () => {
 	assert.doesNotThrow(() => {
@@ -59,6 +60,32 @@ test('status distinguishes stopped, display-only, and touch', () => {
 	);
 });
 
+test('status is read-only for ownership records', () => {
+	const statusFunction = script.match(
+		/status_stack\(\) \{([\s\S]*?)\n\}/,
+	)?.[1];
+	assert.ok(statusFunction);
+	assert.match(statusFunction, /active_mode="\$\(status_mode \|\| true\)"/);
+	assert.doesNotMatch(statusFunction, /clear_stale_record|rm -f/);
+	assert.match(
+		script,
+		/status_mode\(\) \{\s*# Status must not discard another invocation's ownership record[\s\S]*?mode_for_owned_host false/,
+	);
+});
+
 test('stopping the stack always clears the mode record', () => {
 	assert.match(script, /stop_stack\(\) \{[\s\S]*?rm -f "\$MODE_FILE"/);
+});
+
+test('README command reference matches the unified script contract', () => {
+	for (const command of [
+		'ipad',
+		'ipad stop',
+		'ipad touch',
+		'ipad touch stop',
+		'ipad status',
+	]) {
+		assert.match(readme, new RegExp(`\\\`${command}\\\``));
+	}
+	assert.match(readme, /Plain `ipad` remains[\s\S]*never starts the native input helper/);
 });

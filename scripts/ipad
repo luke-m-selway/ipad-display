@@ -212,9 +212,12 @@ wait_for_display_identity() {
   return 1
 }
 
-running_mode() {
+mode_for_owned_host() {
+  local remove_stale_mode_record="$1"
   if ! is_owned_process "$HOST_PID_FILE" "$HOST_ENTRY"; then
-    rm -f "$MODE_FILE"
+    if [ "$remove_stale_mode_record" = true ]; then
+      rm -f "$MODE_FILE"
+    fi
     return 1
   fi
   local mode token extra record host_token
@@ -229,6 +232,16 @@ running_mode() {
   fi
   # Pre-touch stacks have no mode record and are always the safe display mode.
   printf '%s\n' "display"
+}
+
+running_mode() {
+  mode_for_owned_host true
+}
+
+status_mode() {
+  # Status must not discard another invocation's ownership record; start/stop
+  # are the lifecycle operations that clean stale state.
+  mode_for_owned_host false
 }
 
 stop_command_for_mode() {
@@ -341,10 +354,8 @@ stop_requested_mode() {
 }
 
 status_stack() {
-  clear_stale_record "$HOST_PID_FILE" "$HOST_ENTRY"
-  clear_stale_record "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"
   local active_mode
-  active_mode="$(running_mode || true)"
+  active_mode="$(status_mode || true)"
   case "$active_mode" in
     display) echo "iPad mode: display-only" ;;
     touch) echo "iPad mode: touch" ;;
