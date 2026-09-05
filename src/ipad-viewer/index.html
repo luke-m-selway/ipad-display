@@ -73,8 +73,16 @@
         let touchEnabled = false;
         let touchCapabilityKnown = false;
         let macControlEnabled = true;
-        let touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
         const DRAG_THRESHOLD_PX = 12;
+        const SYSTEM_GESTURE_THRESHOLD_PX = 45;
+        const newTouchGesture = (mode = 'idle') => ({
+          mode,
+          primaryId: null,
+          start: null,
+          last: null,
+          fired: false,
+        });
+        let touchGesture = newTouchGesture();
 
         const setStatus = (text, isStreaming = false) => {
           status.textContent = text;
@@ -127,16 +135,20 @@
         const touchWithId = (touches, identifier) =>
           Array.from(touches).find((touch) => touch.identifier === identifier);
 
-        const centroid = (touches) => {
-          const points = Array.from(touches).slice(0, 2).map(videoPoint);
-          if (points.length !== 2 || !points[0] || !points[1]) return null;
-          return {
-            x: (points[0].x + points[1].x) / 2,
-            y: (points[0].y + points[1].y) / 2,
-            clientX: (points[0].clientX + points[1].clientX) / 2,
-            clientY: (points[0].clientY + points[1].clientY) / 2,
-          };
+        const touchCentroid = (touches, count) => {
+          const points = Array.from(touches).slice(0, count).map(videoPoint);
+          if (points.length !== count || points.some((point) => !point)) return null;
+          return points.reduce((center, point) => ({
+            x: center.x + point.x / count,
+            y: center.y + point.y / count,
+            clientX: center.clientX + point.clientX / count,
+            clientY: center.clientY + point.clientY / count,
+          }), { x: 0, y: 0, clientX: 0, clientY: 0 });
         };
+
+        const centroid = (touches) => touchCentroid(touches, 2);
+        const threeFingerCentroid = (touches) =>
+          touches.length === 3 ? touchCentroid(touches, 3) : null;
 
         const canSendTouch = () =>
           touchEnabled && macControlEnabled && isStreaming && isImmersiveViewer() && lifecycle &&
@@ -163,29 +175,67 @@
         const releaseActiveDrag = () => {
           if (touchGesture.mode === 'dragging' && touchGesture.last) {
             emitInput('up', touchGesture.last);
-            touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
+            touchGesture = newTouchGesture();
           }
         };
 
         const resetTouchGesture = () => {
           releaseActiveDrag();
-          touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
+          touchGesture = newTouchGesture();
         };
 
         const ignoreTouchesUntilLift = () => {
           releaseActiveDrag();
-          touchGesture = { mode: 'ignored', primaryId: null, start: null, last: null };
+          touchGesture = newTouchGesture('ignored');
+        };
+
+        const beginSystemGesture = (touches) => {
+          const start = threeFingerCentroid(touches);
+          if (!start) {
+            ignoreTouchesUntilLift();
+            return;
+          }
+          // Three fingers can replace a pending click or scroll, never a held drag.
+          touchGesture = newTouchGesture('system');
+          touchGesture.start = start;
+          touchGesture.last = start;
+        };
+
+        const handleSystemGestureMove = (touches) => {
+          if (touches.length !== 3) {
+            ignoreTouchesUntilLift();
+            return;
+          }
+          const point = threeFingerCentroid(touches);
+          if (!point || !touchGesture.start || touchGesture.fired) return;
+          const deltaX = point.clientX - touchGesture.start.clientX;
+          const deltaY = point.clientY - touchGesture.start.clientY;
+          if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < SYSTEM_GESTURE_THRESHOLD_PX) return;
+          touchGesture.fired = true;
+          if (Math.abs(deltaX) > Math.abs(deltaY)) {
+            emitInput(deltaX < 0 ? 'space_right' : 'space_left', point);
+          } else if (deltaY < 0) {
+            emitInput('mission_control', point);
+          }
         };
 
         const handleTouchStart = (event) => {
           event.preventDefault();
           if (!canSendTouch()) return;
-          if (event.touches.length >= 3) {
-            event.preventDefault();
+          if (event.touches.length > 3) {
             ignoreTouchesUntilLift();
             return;
           }
-          if (touchGesture.mode === 'ignored' || touchGesture.mode === 'dragging' || touchGesture.mode === 'scrolling') return;
+          if (event.touches.length === 3) {
+            if (touchGesture.mode === 'dragging') {
+              ignoreTouchesUntilLift();
+              return;
+            }
+            if (touchGesture.mode !== 'ignored') beginSystemGesture(event.touches);
+            return;
+          }
+          if (touchGesture.mode === 'ignored' || touchGesture.mode === 'dragging' ||
+              touchGesture.mode === 'scrolling' || touchGesture.mode === 'system') return;
           if (event.touches.length === 1) {
             const start = videoPoint(event.touches[0]);
             if (!start) {
@@ -193,7 +243,10 @@
               return;
             }
             event.preventDefault();
-            touchGesture = { mode: 'pending', primaryId: event.touches[0].identifier, start, last: start };
+            touchGesture = newTouchGesture('pending');
+            touchGesture.primaryId = event.touches[0].identifier;
+            touchGesture.start = start;
+            touchGesture.last = start;
             return;
           }
           const center = centroid(event.touches);
@@ -204,15 +257,24 @@
           }
           // This is a positioning move for scrolling, not general hover forwarding.
           emitInput('move', center);
-          touchGesture = { mode: 'scrolling', primaryId: null, start: null, last: center };
+          touchGesture = newTouchGesture('scrolling');
+          touchGesture.last = center;
         };
 
         const handleTouchMove = (event) => {
           event.preventDefault();
           if (!canSendTouch()) return;
-          if (event.touches.length >= 3) {
-            event.preventDefault();
+          if (touchGesture.mode === 'system') {
+            handleSystemGestureMove(event.touches);
+            return;
+          }
+          if (event.touches.length > 3) {
             ignoreTouchesUntilLift();
+            return;
+          }
+          if (event.touches.length === 3) {
+            if (touchGesture.mode === 'dragging') ignoreTouchesUntilLift();
+            else if (touchGesture.mode !== 'ignored') beginSystemGesture(event.touches);
             return;
           }
           if (touchGesture.mode === 'ignored') return;
@@ -245,11 +307,15 @@
           event.preventDefault();
           if (!canSendTouch()) return;
           if (touchGesture.mode === 'ignored') {
-            if (event.touches.length === 0) touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
+            if (event.touches.length === 0) touchGesture = newTouchGesture();
+            return;
+          }
+          if (touchGesture.mode === 'system') {
+            touchGesture = event.touches.length ? newTouchGesture('ignored') : newTouchGesture();
             return;
           }
           if (touchGesture.mode === 'scrolling') {
-            if (event.touches.length < 2) touchGesture = event.touches.length ? { mode: 'ignored', primaryId: null, start: null, last: null } : { mode: 'idle', primaryId: null, start: null, last: null };
+            if (event.touches.length < 2) touchGesture = event.touches.length ? newTouchGesture('ignored') : newTouchGesture();
             return;
           }
           const ended = touchWithId(event.changedTouches, touchGesture.primaryId);
@@ -258,14 +324,14 @@
           const point = videoPoint(ended) || touchGesture.last;
           if (touchGesture.mode === 'pending' && point) emitInput('click', point);
           if (touchGesture.mode === 'dragging' && point) emitInput('up', point);
-          touchGesture = event.touches.length ? { mode: 'ignored', primaryId: null, start: null, last: null } : { mode: 'idle', primaryId: null, start: null, last: null };
+          touchGesture = event.touches.length ? newTouchGesture('ignored') : newTouchGesture();
         };
 
         const handleTouchCancel = (event) => {
           event.preventDefault();
           if (!canSendTouch()) return;
           ignoreTouchesUntilLift();
-          if (event.touches.length === 0) touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
+          if (event.touches.length === 0) touchGesture = newTouchGesture();
         };
 
         const requestElementFullscreen = () => {

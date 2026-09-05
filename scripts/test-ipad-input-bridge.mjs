@@ -148,6 +148,20 @@ test('scroll with zero delta is dropped; nonzero delta is scaled to bounds', () 
 	]);
 });
 
+test('semantic system actions are forwarded without coordinate mapping', () => {
+	const { IpadInputBridge, spawned } = loadIpadInputBridge();
+	const bridge = new IpadInputBridge(bounds);
+	bridge.start();
+	bridge.handle({ action: 'mission_control', x: 0.5, y: 0.5 });
+	bridge.handle({ action: 'space_left', x: 0.5, y: 0.5 });
+	bridge.handle({ action: 'space_right', x: 0.5, y: 0.5 });
+	assert.deepEqual(spawned[0].child.writes, [
+		'mission_control',
+		'space_left',
+		'space_right',
+	]);
+});
+
 test('stop() releases a held button, ends stdin, and drops the child reference', () => {
 	const { IpadInputBridge, spawned } = loadIpadInputBridge();
 	const bridge = new IpadInputBridge(bounds);

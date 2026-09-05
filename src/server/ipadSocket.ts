@@ -42,7 +42,10 @@ function parseIpadInput(payload: unknown): IpadInputPayload | null {
 		action !== 'up' &&
 		action !== 'drag' &&
 		action !== 'scroll' &&
-		action !== 'move'
+		action !== 'move' &&
+		action !== 'mission_control' &&
+		action !== 'space_left' &&
+		action !== 'space_right'
 	)
 		return null;
 	if (

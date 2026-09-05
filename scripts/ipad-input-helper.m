@@ -54,10 +54,35 @@ static void releaseMouse(void) {
     mouseIsDown = NO;
 }
 
+static BOOL systemShortcutKeyCode(NSString *command, NSInteger *keyCode) {
+    if ([command isEqualToString:@"mission_control"]) *keyCode = 126;
+    else if ([command isEqualToString:@"space_left"]) *keyCode = 123;
+    else if ([command isEqualToString:@"space_right"]) *keyCode = 124;
+    else return NO;
+    return YES;
+}
+
+static void runSystemEventsShortcut(NSInteger keyCode) {
+    // On Ventura this helper's trusted CGEvents do not invoke global symbolic
+    // hotkeys. Keep System Events here to avoid per-gesture osascript startup.
+    NSString *source = [NSString stringWithFormat:
+        @"tell application \"System Events\" to key code %ld using control down", (long)keyCode];
+    NSAppleScript *script = [[NSAppleScript alloc] initWithSource:source];
+    NSDictionary *error = nil;
+    [script executeAndReturnError:&error];
+    if (error) fprintf(stderr, "system-events-shortcut-error=%s\n", error.description.UTF8String);
+}
+
 static void handleCommand(NSArray<NSString *> *parts) {
     NSString *command = parts.firstObject;
     if ([command isEqualToString:@"release"] && parts.count == 1) {
         releaseMouse();
+        return;
+    }
+    NSInteger keyCode;
+    if (parts.count == 1 && systemShortcutKeyCode(command, &keyCode)) {
+        releaseMouse();
+        runSystemEventsShortcut(keyCode);
         return;
     }
     if ([command isEqualToString:@"move"] && parts.count == 3) {

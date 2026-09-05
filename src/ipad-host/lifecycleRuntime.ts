@@ -99,7 +99,16 @@ export function markIpadStreaming(socketId: string): IpadLifecycleResult {
 }
 
 export type IpadInput = {
-	action: 'click' | 'down' | 'up' | 'drag' | 'scroll' | 'move';
+	action:
+		| 'click'
+		| 'down'
+		| 'up'
+		| 'drag'
+		| 'scroll'
+		| 'move'
+		| 'mission_control'
+		| 'space_left'
+		| 'space_right';
 	x: number;
 	y: number;
 	deltaX?: number;

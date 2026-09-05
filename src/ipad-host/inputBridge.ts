@@ -55,6 +55,14 @@ export class IpadInputBridge {
 	}
 
 	handle(input: IpadInput): void {
+		switch (input.action) {
+			case 'mission_control':
+			case 'space_left':
+			case 'space_right':
+				this.release();
+				this.write(input.action);
+				return;
+		}
 		const position = this.position(input.x, input.y);
 		switch (input.action) {
 			case 'move':

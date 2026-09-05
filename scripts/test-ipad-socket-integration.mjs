@@ -365,6 +365,23 @@ test('touch mode accepts input from the current streaming viewer', async (t) => 
 	);
 });
 
+test('touch mode accepts only known semantic system actions from the current viewer', async (t) => {
+	const { runtime, url } = await createHarness(t);
+	const calls = [];
+	const context = await reachStreaming(runtime, url, 'session-system-actions');
+	t.after(() => {
+		context.owner.close();
+		context.viewer.close();
+	});
+	const received = waitForInput(runtime, calls);
+	context.viewer.emit(
+		'IPAD_INPUT',
+		validInput(context, { action: 'mission_control' }),
+	);
+	await received;
+	assert.deepEqual(calls.map((call) => call.action), ['mission_control']);
+});
+
 test('malformed, non-finite, and out-of-range IPAD_INPUT payloads never reach the handler', async (t) => {
 	const { runtime, url } = await createHarness(t);
 	const calls = recordInputs(runtime);

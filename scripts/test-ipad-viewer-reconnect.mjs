@@ -275,6 +275,18 @@ function tapTouchSurface(harness, identifier = 1) {
 	});
 }
 
+function threeTouches(offsetX = 0, offsetY = 0) {
+	return [
+		touch(1, 48 + offsetX, 50 + offsetY),
+		touch(2, 50 + offsetX, 50 + offsetY),
+		touch(3, 52 + offsetX, 50 + offsetY),
+	];
+}
+
+function startThreeFingerGesture(harness) {
+	harness.touchSurface.dispatch('touchstart', { touches: threeTouches() });
+}
+
 test('viewer waits for an authoritative owner before sending DEVICE_DETAILS', () => {
 	const harness = createViewerHarness();
 	connectAndAuthorize(
@@ -568,6 +580,81 @@ test('touch-control button gestures never become Mac input', () => {
 
 	assert.deepEqual(inputActions(harness), []);
 	assert.equal(harness.touchControl.textContent, 'Mac');
+});
+
+test('three-finger up emits Mission Control once before all fingers lift', () => {
+	const harness = createViewerHarness({ standalone: true });
+	activateTouchStreaming(harness);
+
+	startThreeFingerGesture(harness);
+	harness.touchSurface.dispatch('touchmove', { touches: threeTouches(0, -46) });
+	harness.touchSurface.dispatch('touchmove', { touches: threeTouches(0, -80) });
+	harness.touchSurface.dispatch('touchend', { changedTouches: threeTouches(0, -80) });
+
+	assert.deepEqual(inputActions(harness), ['mission_control']);
+});
+
+test('three-finger horizontal swipes use natural Space directions', () => {
+	const left = createViewerHarness({ standalone: true });
+	activateTouchStreaming(left);
+	startThreeFingerGesture(left);
+	left.touchSurface.dispatch('touchmove', { touches: threeTouches(-46, 10) });
+	left.touchSurface.dispatch('touchend', { changedTouches: threeTouches(-46, 10) });
+
+	const right = createViewerHarness({ standalone: true });
+	activateTouchStreaming(right);
+	startThreeFingerGesture(right);
+	right.touchSurface.dispatch('touchmove', { touches: threeTouches(46, 10) });
+	right.touchSurface.dispatch('touchend', { changedTouches: threeTouches(46, 10) });
+
+	assert.deepEqual(inputActions(left), ['space_right']);
+	assert.deepEqual(inputActions(right), ['space_left']);
+});
+
+test('three-finger movement below the 45px threshold emits nothing', () => {
+	const harness = createViewerHarness({ standalone: true });
+	activateTouchStreaming(harness);
+
+	startThreeFingerGesture(harness);
+	harness.touchSurface.dispatch('touchmove', { touches: threeTouches(44, 0) });
+	harness.touchSurface.dispatch('touchend', { changedTouches: threeTouches(44, 0) });
+
+	assert.deepEqual(inputActions(harness), []);
+});
+
+test('a pending gesture can become a three-finger system gesture without clicking', () => {
+	const harness = createViewerHarness({ standalone: true });
+	activateTouchStreaming(harness);
+	harness.touchSurface.dispatch('touchstart', { touches: [touch(1, 30, 50)] });
+	startThreeFingerGesture(harness);
+	harness.touchSurface.dispatch('touchmove', { touches: threeTouches(0, -46) });
+	harness.touchSurface.dispatch('touchend', { changedTouches: threeTouches(0, -46) });
+
+	assert.deepEqual(inputActions(harness), ['mission_control']);
+});
+
+test('a committed drag releases and cannot turn into a three-finger system gesture', () => {
+	const harness = createViewerHarness({ standalone: true });
+	activateTouchStreaming(harness);
+	harness.touchSurface.dispatch('touchstart', { touches: [touch(1, 30, 50)] });
+	harness.touchSurface.dispatch('touchmove', { touches: [touch(1, 50, 50)] });
+	startThreeFingerGesture(harness);
+	harness.touchSurface.dispatch('touchmove', { touches: threeTouches(0, -60) });
+	harness.touchSurface.dispatch('touchend', { changedTouches: threeTouches(0, -60) });
+
+	assert.deepEqual(inputActions(harness), ['down', 'drag', 'up']);
+});
+
+test('disabled Mac control emits no three-finger system action', () => {
+	const harness = createViewerHarness({ standalone: true });
+	activateTouchStreaming(harness);
+	harness.touchControl.dispatch('click');
+	startThreeFingerGesture(harness);
+	harness.touchSurface.dispatch('touchmove', { touches: threeTouches(0, -60) });
+	harness.touchSurface.dispatch('touchend', { changedTouches: threeTouches(0, -60) });
+
+	assert.equal(harness.touchControl.textContent, 'Mac');
+	assert.deepEqual(inputActions(harness), []);
 });
 
 test('display-only mode retains document fullscreen entry and native-video fallback', () => {
