@@ -8,6 +8,7 @@ import { LocalPeerUser } from '../../../../common/LocalPeerUser';
 import type { SendEncryptedMessagePayload } from '../../../../common/SendEncryptedMessagePayload';
 import { handleRecieveEncryptedMessage } from '../../utils/handleRecieveEncryptedMessage';
 import { prepare as prepareMessage } from '../../utils/message';
+import watchCaptureTrackEnded from './captureTrackEndedRecovery';
 import getDesktopSourceStreamBySourceID from './getDesktopSourceStreamBySourceID';
 import handleCreatePeer from './handleCreatePeer';
 import handleSelfDestroy from './handleSelfDestroy';
@@ -27,6 +28,7 @@ type SimplePeerWithRTCPeerConnection = {
 
 export interface PartnerPeerUser {
 	username: string;
+	socketId?: string;
 }
 
 export default class PeerConnection {
@@ -56,6 +58,12 @@ export default class PeerConnection {
 	sourceDisplaySize: DisplaySize | undefined;
 	sourceCaptureSize: DisplaySize | undefined;
 	beforeunloadHandler: (() => void) | null = null;
+	stallDiagnosticsCleanup: (() => void) | null = null;
+	captureTrackEndedCleanup: (() => void) | null = null;
+	isSelfDestroying = false;
+	isIpadMode: boolean;
+	ipadLifecycleGeneration: number | null = null;
+	ipadLifecycleSessionID: string | null = null;
 
 	constructor(
 		roomID: string,
@@ -63,8 +71,10 @@ export default class PeerConnection {
 		user: LocalPeerUser,
 		port: string,
 		signalingHost?: string,
+		isIpadMode = false,
 	) {
 		this.sharingSessionID = sharingSessionID;
+		this.isIpadMode = isIpadMode;
 		this.isSocketRoomLocked = false;
 		this.roomID = encodeURI(roomID);
 		this.socket = connectSocket(port, this.roomID, signalingHost);
@@ -189,6 +199,7 @@ export default class PeerConnection {
 
 				// store reference to old stream before replacement
 				const oldStream = this.localStream;
+				this.stopCaptureTrackEndedRecovery();
 
 				// replace the track in the existing peer
 				// replaceTrack will add the new track to the old stream
@@ -208,6 +219,7 @@ export default class PeerConnection {
 				// update local stream reference to the new stream
 				// the new stream's track is now being used in the peer connection
 				this.localStream = newStream;
+				this.watchIpadCaptureTrackEnded(newVideoTrack);
 
 				// update sourceDisplaySize from actual stream to ensure correct resolution
 				// this is critical when switching sources to get the actual stream dimensions
@@ -276,11 +288,19 @@ export default class PeerConnection {
 		this.partnerDeviceDetails = {} as Device;
 	}
 
-	selfDestroy(): void {
-		handleSelfDestroy(this);
+	selfDestroy(reason = 'helper-requested-reset'): void {
+		if (this.isSelfDestroying) return;
+		this.isSelfDestroying = true;
+		handleSelfDestroy(this, reason);
 	}
 
 	emitUserEnter(): void {
+		if (this.isIpadMode) {
+			this.socket.emit('IPAD_REGISTER_OWNER', {
+				sessionId: this.sharingSessionID,
+			});
+			return;
+		}
 		this.socket.emit('USER_ENTER', {
 			username: this.user.username,
 		});
@@ -291,9 +311,18 @@ export default class PeerConnection {
 	): Promise<void> {
 		if (!this.socket) return;
 		if (!this.user) return;
+		const msg = await prepareMessage(payload, this.user);
+		if (this.isIpadMode) {
+			if (
+				this.ipadLifecycleSessionID !== this.sharingSessionID ||
+				this.ipadLifecycleGeneration === null
+			)
+				return;
+			this.socket.emit('IPAD_SIGNAL', msg.toSend);
+			return;
+		}
 		if (!this.partner) return;
 		if (!this.partner.username) return;
-		const msg = await prepareMessage(payload, this.user);
 		this.socket.emit('MESSAGE', msg.toSend);
 	}
 
@@ -319,6 +348,30 @@ export default class PeerConnection {
 
 	createPeer(): Promise<void> {
 		return handleCreatePeer(this);
+	}
+
+	stopStallDiagnostics(): void {
+		this.stallDiagnosticsCleanup?.();
+		this.stallDiagnosticsCleanup = null;
+	}
+
+	watchIpadCaptureTrackEnded(track: MediaStreamTrack): void {
+		if (!this.isIpadMode) return;
+		this.stopCaptureTrackEndedRecovery();
+		if (!this.sourceCaptureSize) return;
+
+		this.captureTrackEndedCleanup = watchCaptureTrackEnded(
+			track,
+			() =>
+				!this.isSelfDestroying &&
+				this.localStream?.getVideoTracks()[0] === track,
+			() => this.selfDestroy('capture-track-ended'),
+		);
+	}
+
+	stopCaptureTrackEndedRecovery(): void {
+		this.captureTrackEndedCleanup?.();
+		this.captureTrackEndedCleanup = null;
 	}
 
 	toggleLockRoom(isConnected: boolean): void {

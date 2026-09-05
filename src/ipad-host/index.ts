@@ -10,6 +10,11 @@ import { getDeskreenGlobal } from '../main/helpers/getDeskreenGlobal';
 import { initGlobals } from '../main/helpers/initGlobals';
 import { startLogBufferCleanup } from '../main/utils/LoggerWithFilePrefix';
 import { signalingServer } from '../server';
+import {
+	requestIpadReset,
+	setIpadLifecycleResetHandler,
+	startIpadLifecycleSession,
+} from './lifecycleRuntime';
 
 const IPAD_BIND_IP = '192.168.2.1';
 const IPAD_PORT = 3131;
@@ -38,6 +43,8 @@ let virtualDisplay: VirtualDisplaySource | null = null;
 let sharingSession: SharingSession | null = null;
 let restartInProgress = false;
 let isQuitting = false;
+const isIpadStallDiagnosticsEnabled =
+	process.env.IPAD_STALL_DIAGNOSTICS === '1';
 
 const hostUser: LocalPeerUser = {
 	username: 'iPad-Host',
@@ -178,24 +185,46 @@ function createSharingSession(source: VirtualDisplaySource): SharingSession {
 	);
 	session.setDesktopCapturerSourceID(source.sourceID);
 	deskreenGlobal.sharingSessionService.sharingSessions.set(session.id, session);
+	startIpadLifecycleSession(session.id);
 	startSharingForConnectedViewer(session);
 	return session;
 }
 
-async function restartSharingSession(sessionID: string): Promise<void> {
-	if (isQuitting || restartInProgress || sharingSession?.id !== sessionID)
+async function restartSharingSession(
+	sessionID: string,
+	reason: string,
+): Promise<void> {
+	if (isQuitting || restartInProgress) return;
+	if (sharingSession?.id !== sessionID) {
+		if (isIpadStallDiagnosticsEnabled) {
+			console.log(
+				`[iPad Host] Ignored stale reset request session=${sessionID} active=${sharingSession?.id ?? 'none'}`,
+			);
+		}
 		return;
+	}
 	restartInProgress = true;
 	try {
 		const previousSession = sharingSession;
 		sharingSession = null;
-		previousSession?.destroy();
 		const deskreenGlobal = getDeskreenGlobal();
+		// Helper-window destruction is asynchronous, but this slot belongs to the
+		// retiring generation and must be released before its replacement admits
+		// the same logical iPad viewer.
+		void deskreenGlobal.connectedDevicesService.disconnectDeviceByID(
+			previousSession?.deviceID ?? '',
+		);
+		previousSession?.destroy();
 		deskreenGlobal.sharingSessionService.sharingSessions.delete(sessionID);
 		deskreenGlobal.roomIDService.unmarkRoomIDAsTaken(IPAD_FIXED_ROOM_ID);
 		if (!virtualDisplay) throw new Error('Virtual display source was lost');
 		sharingSession = createSharingSession(virtualDisplay);
-		console.log('[iPad Host] Reset session after viewer disconnect');
+		console.log(`[iPad Host] Reset session reason=${reason}`);
+		if (isIpadStallDiagnosticsEnabled) {
+			console.log(
+				`[iPad Host] Session reset previous=${sessionID} replacement=${sharingSession.id} reason=${reason}`,
+			);
+		}
 	} finally {
 		restartInProgress = false;
 	}
@@ -204,6 +233,17 @@ async function restartSharingSession(sessionID: string): Promise<void> {
 function registerIpadIPCHandlers(): void {
 	ipcMain.handle(IpcEvents.GetPort, () => signalingServer.port);
 	ipcMain.handle(IpcEvents.GetSignalingHost, () => `http://${IPAD_BIND_IP}`);
+	ipcMain.handle(IpcEvents.GetIpadMode, () => process.env.IPAD_MODE === '1');
+	ipcMain.handle(
+		IpcEvents.GetIpadStallDiagnosticsEnabled,
+		() => process.env.IPAD_STALL_DIAGNOSTICS === '1',
+	);
+	ipcMain.on(IpcEvents.IpadStallDiagnosticRecord, (_, record: unknown) => {
+		if (process.env.IPAD_STALL_DIAGNOSTICS !== '1') return;
+		if (typeof record !== 'string' || !record.startsWith('[iPad Stall]'))
+			return;
+		console.log(record);
+	});
 	ipcMain.handle(
 		IpcEvents.GetSourceDisplayIDByDesktopCapturerSourceID,
 		(_, sourceID) =>
@@ -225,8 +265,14 @@ function registerIpadIPCHandlers(): void {
 	);
 	ipcMain.handle(
 		IpcEvents.DestroySharingSessionById,
-		(_, sessionID: string) => {
-			void restartSharingSession(sessionID);
+		(_, payload: string | { sessionID?: string; reason?: string }) => {
+			const sessionID =
+				typeof payload === 'string' ? payload : (payload.sessionID ?? '');
+			const reason =
+				typeof payload === 'string'
+					? 'helper-requested-reset'
+					: (payload.reason ?? 'helper-requested-reset');
+			if (sessionID) requestIpadReset(sessionID, reason);
 		},
 	);
 	// The fixed room remains owned for the host lifetime; a reconnect gets a fresh
@@ -257,6 +303,9 @@ async function startIpadHost(): Promise<void> {
 	startLogBufferCleanup();
 	const appPath = join(__dirname, '..');
 	initGlobals(appPath, IPAD_BIND_IP, true);
+	setIpadLifecycleResetHandler((sessionID, reason) => {
+		void restartSharingSession(sessionID, reason);
+	});
 	registerIpadIPCHandlers();
 
 	await signalingServer.start();

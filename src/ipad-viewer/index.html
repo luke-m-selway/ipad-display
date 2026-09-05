@@ -33,15 +33,35 @@
         const fullscreenHint = document.getElementById('fullscreen-hint');
         const SimplePeer = window['SimplePeer'];
         const connectSocket = window['io'];
-        const user = {
-          id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
-          username: `ipad-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        const VIEWER_ID_STORAGE_KEY = 'ipad-display.logical-viewer-id';
+        const createViewerId = () =>
+          crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+        const getLogicalViewerId = () => {
+          try {
+            const existingId = window.localStorage.getItem(VIEWER_ID_STORAGE_KEY);
+            if (existingId) return existingId;
+            const createdId = createViewerId();
+            window.localStorage.setItem(VIEWER_ID_STORAGE_KEY, createdId);
+            return createdId;
+          } catch {
+            // Storage can be unavailable in private or restricted browser contexts.
+            return createViewerId();
+          }
         };
+        // A socket identifies one transport connection; this ID identifies the
+        // iPad browser profile so a Safari relaunch can atomically replace it.
+        const logicalViewerId = getLogicalViewerId();
+        const viewerDocumentId = createViewerId();
 
-        let partner = null;
-        let deviceDetailsSent = false;
+        let peer = null;
         let isStreaming = false;
         let lastFullscreenGestureAt = 0;
+        let peerRecoveryInProgress = false;
+        let pageIsTearingDown = false;
+        let lifecycle = null;
+        let registeredGeneration = null;
+        let deviceDetailsGeneration = null;
+        let needsFreshPeer = false;
 
         const setStatus = (text, isStreaming = false) => {
           status.textContent = text;
@@ -91,70 +111,157 @@
           setStatus('Viewer assets failed to load');
           return;
         }
-        const peer = new SimplePeer({ initiator: false, config: { iceServers: [] } });
         const socket = connectSocket(window.location.origin, {
           query: { roomId: ROOM_ID },
           forceNew: true,
         });
 
-        const sendMessage = (type, payload) => {
-          if (!partner) return;
-          socket.emit('MESSAGE', {
-            type,
-            payload: { ...payload, sender: user.id, username: user.username },
+        const clearViewerSessionState = () => {
+          isStreaming = false;
+          video.srcObject = null;
+          updateFullscreenHint();
+        };
+
+        const disposePeer = () => {
+          if (!peer) return;
+          const stalePeer = peer;
+          // Make any synchronous close from destroy stale before it can request recovery.
+          peer = null;
+          stalePeer.removeAllListeners();
+          stalePeer.destroy();
+        };
+
+        const recoverFromUnexpectedPeerTermination = (terminatedPeer, reason) => {
+          if (
+            pageIsTearingDown ||
+            peerRecoveryInProgress ||
+            peer !== terminatedPeer
+          ) {
+            return;
+          }
+          peerRecoveryInProgress = true;
+          clearViewerSessionState();
+          disposePeer();
+          lifecycle = null;
+          deviceDetailsGeneration = null;
+          registeredGeneration = null;
+          needsFreshPeer = true;
+          setStatus(`Reconnecting display (${reason})…`);
+
+          // The server transfers authority only after this socket has registered
+          // for a generation. Reusing connect keeps that registration canonical.
+          socket.disconnect();
+          socket.connect();
+        };
+
+        const createPeer = () => {
+          const nextPeer = new SimplePeer({ initiator: false, config: { iceServers: [] } });
+          peer = nextPeer;
+
+          nextPeer.on('signal', (signalData) => {
+            if (!lifecycle || peer !== nextPeer) return;
+            socket.emit('IPAD_SIGNAL', {
+              type: 'CALL_ACCEPTED',
+              payload: { signalData },
+            });
+          });
+
+          nextPeer.on('stream', (stream) => {
+            if (peer !== nextPeer) return;
+            video.srcObject = stream;
+            void video.play().catch(() => {
+              console.debug('[iPad Viewer] Safari deferred autoplay');
+            });
+            isStreaming = true;
+            setStatus('Streaming', true);
+            updateFullscreenHint();
+          });
+
+          nextPeer.on('error', (error) => {
+            if (peer !== nextPeer) return;
+            console.error('[iPad Viewer] simple-peer error', error);
+            recoverFromUnexpectedPeerTermination(nextPeer, 'WebRTC error');
+          });
+
+          nextPeer.on('close', () => {
+            recoverFromUnexpectedPeerTermination(nextPeer, 'WebRTC closed');
           });
         };
 
-        peer.on('signal', (signalData) => {
-          sendMessage('CALL_ACCEPTED', { signalData });
-        });
+        const resetForPeerRecovery = () => {
+          clearViewerSessionState();
+          disposePeer();
+          createPeer();
+        };
 
-        peer.on('stream', (stream) => {
-          video.srcObject = stream;
-          void video.play().catch(() => {
-            console.debug('[iPad Viewer] Safari deferred autoplay');
-          });
-          isStreaming = true;
-          setStatus('Streaming', true);
-          updateFullscreenHint();
-        });
+        const sendDeviceDetailsWhenReady = () => {
+          if (
+            !lifecycle ||
+            lifecycle.viewer?.socketId !== socket.id ||
+            !lifecycle.ownerSocketId ||
+            lifecycle.phase !== 'waiting-viewer' ||
+            deviceDetailsGeneration === lifecycle.generation
+          ) return;
 
-        peer.on('error', (error) => {
-          console.error('[iPad Viewer] simple-peer error', error);
-          setStatus('WebRTC connection failed');
-        });
-
-        socket.on('connect', () => {
-          setStatus('Joining display…');
-          // Darkwire installs its room handlers shortly after Socket.IO connects.
-          // Match the stock viewer's GET_MY_IP -> USER_ENTER ordering.
-          window.setTimeout(() => {
-            socket.emit('GET_MY_IP', () => {
-              socket.emit('USER_ENTER', { username: user.username, ip: '' });
-            });
-          }, 500);
-        });
-
-        socket.on('USER_ENTER', ({ users }) => {
-          const host = users.find((candidate) => candidate.username !== user.username);
-          if (!host || deviceDetailsSent) return;
-
-          partner = host;
-          deviceDetailsSent = true;
-          sendMessage('DEVICE_DETAILS', {
+          deviceDetailsGeneration = lifecycle.generation;
+          socket.emit('IPAD_DEVICE_DETAILS', {
             os: 'iPadOS',
             deviceType: 'tablet',
             browser: navigator.userAgent,
             deviceScreenWidth: window.screen.width,
             deviceScreenHeight: window.screen.height,
           });
+          peerRecoveryInProgress = false;
           setStatus('Waiting for host…');
+        };
+
+        const registerForCurrentGeneration = () => {
+          if (!socket.connected) return;
+          const generation = lifecycle?.generation ?? -1;
+          if (registeredGeneration === generation) return;
+          registeredGeneration = generation;
+          socket.emit('IPAD_REGISTER_VIEWER', {
+            logicalViewerId,
+            documentId: viewerDocumentId,
+          });
+        };
+
+        createPeer();
+
+        socket.on('connect', () => {
+		  registeredGeneration = null;
+          if (needsFreshPeer) {
+            resetForPeerRecovery();
+            needsFreshPeer = false;
+          }
+          setStatus('Joining display…');
+          // Registration is idempotent. It is the only viewer authority request.
+		  registerForCurrentGeneration();
         });
 
-        socket.on('MESSAGE', (message) => {
-          if (!message || !message.type) return;
+        socket.on('IPAD_LIFECYCLE', (nextLifecycle) => {
+          lifecycle = nextLifecycle;
+          if (
+            lifecycle.sessionId &&
+            lifecycle.phase !== 'resetting' &&
+            lifecycle.viewer?.socketId !== socket.id
+          ) {
+            registerForCurrentGeneration();
+            return;
+          }
+          sendDeviceDetailsWhenReady();
+        });
+
+        socket.on('IPAD_SIGNAL', (message) => {
+          if (
+            !message ||
+            !message.type ||
+            !lifecycle ||
+            message.generation !== lifecycle.generation ||
+            message.sessionId !== lifecycle.sessionId
+          ) return;
           if (message.type === 'CALL_USER') {
-            peer.signal(message.payload.signalData);
+            peer?.signal(message.payload.signalData);
           } else if (message.type === 'ALLOWED_TO_CONNECT') {
             setStatus('Starting stream…');
           } else if (message.type === 'DENY_TO_CONNECT' || message.type === 'DISCONNECT_BY_HOST_MACHINE_USER') {
@@ -162,8 +269,29 @@
           }
         });
 
-        socket.on('NOT_ALLOWED', () => setStatus('Display unavailable'));
-        socket.on('disconnect', () => setStatus('Disconnected'));
+        socket.on('IPAD_REJECTED', ({ reason }) => {
+          if (reason === 'different-viewer-active') {
+            setStatus('Display unavailable');
+          } else {
+            setStatus('Waiting for host…');
+          }
+        });
+        socket.on('IPAD_SUPERSEDED', () => {
+          // A different document now owns this persisted viewer identity. It
+          // must not reconnect later and steal authority back from that document.
+          pageIsTearingDown = true;
+          clearViewerSessionState();
+          disposePeer();
+          socket.disconnect();
+          setStatus('Session replaced');
+        });
+        socket.on('disconnect', () => {
+          if (!pageIsTearingDown) setStatus('Disconnected');
+        });
+
+        window.addEventListener('beforeunload', () => {
+          pageIsTearingDown = true;
+        });
       })();
     </script>
   </body>

@@ -1,6 +1,7 @@
 // import SimplePeer from 'simple-peer';
 import createDesktopCapturerStream from './createDesktopCapturerStream';
 import handlePeerOnData from './handlePeerOnData';
+import { startIpadStallDiagnostics } from './ipadStallDiagnostics';
 import NullSimplePeer from './NullSimplePeer';
 // import simplePeerHandleSdpTransform from './simplePeerHandleSdpTransform';
 
@@ -8,6 +9,10 @@ export default function handleCreatePeer(
 	peerConnection: PeerConnection,
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
+		if (peerConnection.isIpadMode) {
+			peerConnection.stopStallDiagnostics();
+			peerConnection.stopCaptureTrackEndedRecovery();
+		}
 		// cleanup existing peer before creating new one
 		if (peerConnection.peer !== NullSimplePeer) {
 			try {
@@ -76,13 +81,32 @@ export default function handleCreatePeer(
 
 				// ensure cleanup on peer end/error to prevent dangling helper window
 				peerConnection.peer.on('close', () => {
-					peerConnection.selfDestroy();
+					peerConnection.selfDestroy('sender-peer-close');
 				});
 
 				peerConnection.peer.on('error', (e: Error) => {
 					console.error('peerConnection peer error', e);
-					peerConnection.selfDestroy();
+					peerConnection.selfDestroy('sender-peer-error');
 				});
+				const captureTrack = peerConnection.localStream?.getVideoTracks()[0];
+				if (peerConnection.isIpadMode && captureTrack) {
+					peerConnection.watchIpadCaptureTrackEnded(captureTrack);
+				}
+				if (peerConnection.isSelfDestroying) {
+					resolve(undefined);
+					return;
+				}
+				if (peerConnection.isIpadMode) {
+					const peer = peerConnection.peer;
+					void startIpadStallDiagnostics(peerConnection).then((cleanup) => {
+						if (!cleanup) return;
+						if (peerConnection.peer === peer) {
+							peerConnection.stallDiagnosticsCleanup = cleanup;
+						} else {
+							cleanup();
+						}
+					});
+				}
 				resolve(undefined);
 			})
 			.catch((e) => {
