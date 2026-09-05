@@ -10,9 +10,47 @@ const viewerScript = viewerHtml.match(
 
 if (!viewerScript) throw new Error('Could not find the iPad viewer script');
 
+function createEventTarget(properties = {}) {
+	const listeners = new Map();
+	return {
+		...properties,
+		addEventListener(event, handler, options) {
+			const handlers = listeners.get(event) ?? [];
+			handlers.push({ handler, options });
+			listeners.set(event, handlers);
+		},
+		removeEventListener(event, handler) {
+			const handlers = listeners.get(event) ?? [];
+			listeners.set(
+				event,
+				handlers.filter((entry) => entry.handler !== handler),
+			);
+		},
+		dispatch(event, payload = {}) {
+			const interaction = {
+				touches: [],
+				changedTouches: [],
+				defaultPrevented: false,
+				preventDefault() {
+					this.defaultPrevented = true;
+				},
+				...payload,
+			};
+			for (const entry of listeners.get(event) ?? []) {
+				entry.handler(interaction);
+			}
+			return interaction;
+		},
+		listenerCount(event) {
+			return (listeners.get(event) ?? []).length;
+		},
+	};
+}
+
 function createViewerHarness({
 	storage = new Map(),
 	viewerIds = ['viewer-id'],
+	elementFullscreen = 'unprefixed',
 } = {}) {
 	const socketHandlers = new Map();
 	const emitted = [];
@@ -72,23 +110,44 @@ function createViewerHarness({
 		}
 	}
 
-	const video = { srcObject: null };
+	const fullscreenCalls = { unprefixed: 0, prefixed: 0, nativeVideo: 0 };
+	const video = createEventTarget({
+		srcObject: null,
+		play() {
+			return Promise.resolve();
+		},
+	});
 	const status = { hidden: false, textContent: '' };
 	const fullscreenHint = { hidden: true };
-	const document = {
+	const touchSurface = createEventTarget({ hidden: true });
+	const document = createEventTarget({
 		fullscreenElement: null,
 		webkitFullscreenElement: null,
 		getElementById(id) {
-			return { video, status, 'fullscreen-hint': fullscreenHint }[id];
+			return {
+				video,
+				'touch-surface': touchSurface,
+				status,
+				'fullscreen-hint': fullscreenHint,
+			}[id];
 		},
-		addEventListener() {
-			return undefined;
-		},
-		documentElement: {
-			requestFullscreen() {
-				return undefined;
-			},
-		},
+	});
+	const root = {};
+	if (elementFullscreen === 'unprefixed') {
+		root.requestFullscreen = () => {
+			fullscreenCalls.unprefixed += 1;
+			document.fullscreenElement = root;
+			return Promise.resolve();
+		};
+	} else if (elementFullscreen === 'prefixed') {
+		root.webkitRequestFullscreen = () => {
+			fullscreenCalls.prefixed += 1;
+			document.webkitFullscreenElement = root;
+		};
+	}
+	document.documentElement = root;
+	video.webkitEnterFullscreen = () => {
+		fullscreenCalls.nativeVideo += 1;
 	};
 	const window = {
 		SimplePeer: FakePeer,
@@ -125,7 +184,19 @@ function createViewerHarness({
 
 	const count = (event) =>
 		emitted.filter((entry) => entry.event === event).length;
-	return { socket, socketHandlers, peers, emitted, count, status, storage };
+	return {
+		socket,
+		socketHandlers,
+		peers,
+		emitted,
+		count,
+		status,
+		storage,
+		document,
+		touchSurface,
+		video,
+		fullscreenCalls,
+	};
 }
 
 function lifecycle({
@@ -149,6 +220,12 @@ function lifecycle({
 function connectAndAuthorize(harness, state = lifecycle()) {
 	harness.socketHandlers.get('connect')();
 	harness.socketHandlers.get('IPAD_LIFECYCLE')(state);
+}
+
+function activateTouchStreaming(harness) {
+	connectAndAuthorize(harness, lifecycle({ phase: 'streaming' }));
+	harness.peers[0].emit('stream', {});
+	harness.socketHandlers.get('IPAD_TOUCH_CAPABILITY')({ enabled: true });
 }
 
 test('viewer waits for an authoritative owner before sending DEVICE_DETAILS', () => {
@@ -287,4 +364,52 @@ test('a rejected different viewer remains able to join a later generation', () =
 		lifecycle({ generation: 2, viewerSocketId: 'viewer-a' }),
 	);
 	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 1);
+});
+
+test('touch mode uses unprefixed element fullscreen and never native video fullscreen', () => {
+	const harness = createViewerHarness({ elementFullscreen: 'unprefixed' });
+	activateTouchStreaming(harness);
+
+	harness.touchSurface.dispatch('touchend');
+
+	assert.equal(harness.fullscreenCalls.unprefixed, 1);
+	assert.equal(harness.fullscreenCalls.nativeVideo, 0);
+	assert.equal(harness.touchSurface.hidden, false);
+});
+
+test('touch mode uses the WebKit-prefixed element fullscreen API when needed', () => {
+	const harness = createViewerHarness({ elementFullscreen: 'prefixed' });
+	activateTouchStreaming(harness);
+
+	harness.touchSurface.dispatch('pointerup');
+
+	assert.equal(harness.fullscreenCalls.prefixed, 1);
+	assert.equal(harness.fullscreenCalls.nativeVideo, 0);
+});
+
+test('active touch mode keeps the video out of the gesture path and suppresses native touch handling', () => {
+	const harness = createViewerHarness({ elementFullscreen: 'none' });
+	activateTouchStreaming(harness);
+
+	const touchStart = harness.touchSurface.dispatch('touchstart');
+	harness.touchSurface.dispatch('pointerup');
+
+	assert.equal(touchStart.defaultPrevented, true);
+	assert.equal(harness.video.listenerCount('touchstart'), 0);
+	assert.equal(harness.touchSurface.listenerCount('touchstart'), 1);
+	assert.equal(harness.fullscreenCalls.nativeVideo, 0);
+	assert.match(viewerHtml, /#touch-surface[^}]*touch-action: none/);
+});
+
+test('display-only mode retains document fullscreen entry and native-video fallback', () => {
+	const harness = createViewerHarness({ elementFullscreen: 'none' });
+	connectAndAuthorize(harness, lifecycle({ phase: 'streaming' }));
+	harness.peers[0].emit('stream', {});
+	harness.socketHandlers.get('IPAD_TOUCH_CAPABILITY')({ enabled: false });
+
+	harness.document.dispatch('touchend');
+
+	assert.equal(harness.touchSurface.hidden, true);
+	assert.equal(harness.document.listenerCount('touchend'), 1);
+	assert.equal(harness.fullscreenCalls.nativeVideo, 1);
 });

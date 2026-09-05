@@ -13,14 +13,17 @@
     <style>
       html, body, video { width: 100%; height: 100%; margin: 0; background: #000; }
       video { display: block; object-fit: contain; }
-      #status { position: fixed; inset: auto 12px 12px; color: #777; font: 12px -apple-system, sans-serif; }
+      #touch-surface { position: fixed; inset: 0; z-index: 1; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+      #touch-surface[hidden] { display: none; }
+      #status { position: fixed; z-index: 2; inset: auto 12px 12px; color: #777; font: 12px -apple-system, sans-serif; pointer-events: none; }
       #status[hidden] { display: none; }
-      #fullscreen-hint { position: fixed; inset: auto 12px 12px; color: #bbb; font: 12px -apple-system, sans-serif; }
+      #fullscreen-hint { position: fixed; z-index: 2; inset: auto 12px 12px; color: #bbb; font: 12px -apple-system, sans-serif; pointer-events: none; }
       #fullscreen-hint[hidden] { display: none; }
     </style>
   </head>
   <body>
     <video id="video" autoplay muted playsinline></video>
+    <div id="touch-surface" hidden aria-hidden="true"></div>
     <div id="status">Connecting…</div>
     <div id="fullscreen-hint" hidden>Tap for fullscreen</div>
     <script src="/vendor/socket.io.min.js"></script>
@@ -29,6 +32,7 @@
       (() => {
         const ROOM_ID = 'ipad-main';
         const video = document.getElementById('video');
+        const touchSurface = document.getElementById('touch-surface');
         const status = document.getElementById('status');
         const fullscreenHint = document.getElementById('fullscreen-hint');
         const SimplePeer = window['SimplePeer'];
@@ -63,6 +67,7 @@
         let deviceDetailsGeneration = null;
         let needsFreshPeer = false;
         let touchEnabled = false;
+        let touchCapabilityKnown = false;
         let touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
         const DRAG_THRESHOLD_PX = 12;
 
@@ -144,6 +149,7 @@
         };
 
         const handleTouchStart = (event) => {
+          event.preventDefault();
           if (!canSendTouch()) return;
           if (event.touches.length >= 3) {
             event.preventDefault();
@@ -173,6 +179,7 @@
         };
 
         const handleTouchMove = (event) => {
+          event.preventDefault();
           if (!canSendTouch()) return;
           if (event.touches.length >= 3) {
             event.preventDefault();
@@ -206,6 +213,7 @@
         };
 
         const handleTouchEnd = (event) => {
+          event.preventDefault();
           if (!canSendTouch()) return;
           if (touchGesture.mode === 'ignored') {
             if (event.touches.length === 0) touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
@@ -225,25 +233,38 @@
         };
 
         const handleTouchCancel = (event) => {
-          if (!canSendTouch()) return;
           event.preventDefault();
+          if (!canSendTouch()) return;
           ignoreTouchesUntilLift();
           if (event.touches.length === 0) touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
+        };
+
+        const requestElementFullscreen = () => {
+          const root = document.documentElement;
+          const request = root.requestFullscreen || root.webkitRequestFullscreen || root.webkitRequestFullScreen;
+          if (typeof request !== 'function') return false;
+          const result = request.call(root);
+          if (result && typeof result.catch === 'function') {
+            void result.catch(() => {
+              // iPadOS only permits this call from the gesture that triggered it.
+            });
+          }
+          return true;
         };
 
         const requestFullscreenFromGesture = () => {
           if (isFullscreen()) return;
 
-          if (typeof document.documentElement.requestFullscreen === 'function') {
-            void document.documentElement.requestFullscreen().catch(() => {
-              // iPadOS only permits this call from the gesture that triggered it.
-            });
-          } else if (typeof video.webkitEnterFullscreen === 'function') {
+          if (requestElementFullscreen()) return;
+          // Never enter native video fullscreen until the server has confirmed
+          // display-only mode: touch mode needs the DOM overlay to own gestures.
+          if (touchCapabilityKnown && !touchEnabled && typeof video.webkitEnterFullscreen === 'function') {
             video.webkitEnterFullscreen();
           }
         };
 
-        const enterFullscreenOnTap = () => {
+        const enterFullscreenOnTap = (event) => {
+          if (touchEnabled) event.preventDefault();
           if (!isStreaming || isFullscreen()) return;
 
           // Safari emits both pointerup and touchend for one finger gesture.
@@ -254,20 +275,37 @@
           requestFullscreenFromGesture();
         };
 
+        const installFullscreenEntryTarget = () => {
+          document.removeEventListener('pointerup', enterFullscreenOnTap);
+          document.removeEventListener('touchend', enterFullscreenOnTap);
+          touchSurface.removeEventListener('pointerup', enterFullscreenOnTap);
+          touchSurface.removeEventListener('touchend', enterFullscreenOnTap);
+          const target = touchEnabled ? touchSurface : document;
+          target.addEventListener('pointerup', enterFullscreenOnTap);
+          target.addEventListener('touchend', enterFullscreenOnTap, { passive: false });
+        };
+
+        const setTouchEnabled = (enabled) => {
+          touchCapabilityKnown = true;
+          touchEnabled = enabled === true;
+          touchSurface.hidden = !touchEnabled;
+          installFullscreenEntryTarget();
+          if (!touchEnabled) releaseActiveDrag();
+        };
+
         // Fullscreen requires a real user activation on iPadOS. Keep this outside
         // stream setup so requesting it never recreates the PeerConnection.
-        document.addEventListener('pointerup', enterFullscreenOnTap);
-        document.addEventListener('touchend', enterFullscreenOnTap);
+        installFullscreenEntryTarget();
         const handleFullscreenChange = () => {
           if (!isFullscreen()) releaseActiveDrag();
           updateFullscreenHint();
         };
         document.addEventListener('fullscreenchange', handleFullscreenChange);
         document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-        document.addEventListener('touchstart', handleTouchStart, { passive: false });
-        document.addEventListener('touchmove', handleTouchMove, { passive: false });
-        document.addEventListener('touchend', handleTouchEnd, { passive: false });
-        document.addEventListener('touchcancel', handleTouchCancel, { passive: false });
+        touchSurface.addEventListener('touchstart', handleTouchStart, { passive: false });
+        touchSurface.addEventListener('touchmove', handleTouchMove, { passive: false });
+        touchSurface.addEventListener('touchend', handleTouchEnd, { passive: false });
+        touchSurface.addEventListener('touchcancel', handleTouchCancel, { passive: false });
 
         // This is the stock Deskreen viewer contract: a non-initiating
         // simple-peer receives CALL_USER signals and returns CALL_ACCEPTED signals.
@@ -404,8 +442,7 @@
         });
 
         socket.on('IPAD_TOUCH_CAPABILITY', ({ enabled }) => {
-          touchEnabled = enabled === true;
-          if (!touchEnabled) releaseActiveDrag();
+          setTouchEnabled(enabled);
         });
 
         socket.on('IPAD_LIFECYCLE', (nextLifecycle) => {
