@@ -76,3 +76,9 @@ This project is derived from [Deskreen CE](https://github.com/pavlobu/deskreen),
 reviewed from Deskreen CE v3.2.16. It remains licensed under the
 [AGPL-3.0](LICENSE); upstream copyright and applicable third-party notices are
 preserved.
+
+The touch-control design was informed by
+[MacPilot](https://github.com/joonlab/MacPilot) (MIT) and
+[Weylus](https://github.com/H-M-H/Weylus) (AGPL-3.0-or-later, with BSD-3-Clause
+contributions) as implementation references. No source from either project is
+vendored or copied into this repository.
