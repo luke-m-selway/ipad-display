@@ -7,18 +7,34 @@ or cross-platform screen-sharing product.
 
 ## Quick start
 
-On the Mac, install the repository dependencies, connect the iPad USB/private
-network, then run the repository script (or place `scripts` on your `PATH` to
-use `ipad` directly):
+Clone the repository on the Mac, then run:
 
 ```bash
-npm ci
-(cd src/client-viewer && npm ci)
-./scripts/ipad
+./scripts/install
+ipad doctor
+```
+
+The installer provisions the validated Intel Node runtime locally, installs npm
+dependencies, builds the host/viewer, prebuilds the touch helper, and installs a
+global `ipad` wrapper where possible. It does not grant macOS privacy
+permissions automatically.
+
+Connect and trust the iPad over USB. In **System Settings → General → Sharing →
+Internet Sharing**, share the Mac's **Wi-Fi** connection to **iPad USB** and turn
+Internet Sharing on. The Mac side must expose `192.168.2.1`.
+
+Start either mode:
+
+```bash
+ipad
+# or
+ipad touch
 ```
 
 Open `http://192.168.2.1:3131/` on the iPad. For the most direct experience,
 save that page to the iPad Home Screen and launch it as a standalone web app.
+macOS will require **Screen Recording** for display capture and **Accessibility**
+for touch mode; approve those prompts in System Settings when requested.
 
 | Command | Result |
 | --- | --- |
@@ -27,6 +43,7 @@ save that page to the iPad Home Screen and launch it as a standalone web app.
 | `ipad touch` | Start display plus opt-in touch control. |
 | `ipad touch stop` | Stop a touch stack. |
 | `ipad status` | Report `stopped`, `display-only`, or `touch`. |
+| `ipad doctor` | Run read-only deployment/runtime checks. |
 
 Stop the active mode before starting the other one; the script never changes a
 running stack's mode implicitly. Plain `ipad` remains the lowest-complexity
@@ -72,10 +89,11 @@ momentum, or generic remote-desktop feature set.
 
 ## Upstream and license
 
-This project is derived from [Deskreen CE](https://github.com/pavlobu/deskreen),
-reviewed from Deskreen CE v3.2.16. It remains licensed under the
-[AGPL-3.0](LICENSE); upstream copyright and applicable third-party notices are
-preserved.
+This is a modified derivative of
+[Deskreen CE](https://github.com/pavlobu/deskreen), based on Deskreen CE v3.2.16
+and substantially modified for this fixed Intel Ventura/iPad workflow in 2026.
+It remains licensed under the [AGPL-3.0](LICENSE); upstream copyright and
+applicable third-party notices are preserved.
 
 The touch-control design was informed by
 [MacPilot](https://github.com/joonlab/MacPilot) (MIT) and
