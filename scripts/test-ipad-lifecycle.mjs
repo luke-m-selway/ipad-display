@@ -20,7 +20,7 @@ function startWithOwnerAndViewer() {
 	const coordinator = new Coordinator();
 	coordinator.startSession('session-1');
 	coordinator.registerOwner('session-1', 'owner-1');
-	coordinator.registerViewer('viewer-1', 'viewer-a');
+	coordinator.registerViewer('viewer-1', 'document-1', 'viewer-a');
 	return coordinator;
 }
 
@@ -37,7 +37,7 @@ test('A: owner first then viewer has one generation and starts negotiation once'
 test('B: viewer first then owner converges without changing viewer authority', () => {
 	const coordinator = new Coordinator();
 	coordinator.startSession('session-1');
-	coordinator.registerViewer('viewer-1', 'viewer-a');
+	coordinator.registerViewer('viewer-1', 'document-1', 'viewer-a');
 	coordinator.registerOwner('session-1', 'owner-1');
 	assert.equal(
 		coordinator.requestNegotiation('viewer-a').kind,
@@ -49,12 +49,12 @@ test('C: viewer during reset is rejected until replacement generation exists', (
 	const coordinator = startWithOwnerAndViewer();
 	coordinator.requestReset('session-1', 'track-ended');
 	assert.equal(
-		coordinator.registerViewer('viewer-1', 'viewer-b').kind,
+		coordinator.registerViewer('viewer-1', 'document-1', 'viewer-b').kind,
 		'rejected',
 	);
 	coordinator.startSession('session-2');
 	assert.equal(
-		coordinator.registerViewer('viewer-1', 'viewer-b').kind,
+		coordinator.registerViewer('viewer-1', 'document-1', 'viewer-b').kind,
 		'accepted',
 	);
 });
@@ -74,7 +74,11 @@ test('D: fast close and reopen makes the old generation stale', () => {
 
 test('E/I/J: same logical viewer atomically replaces socket A with B', () => {
 	const coordinator = startWithOwnerAndViewer();
-	const replacement = coordinator.registerViewer('viewer-1', 'viewer-b');
+	const replacement = coordinator.registerViewer(
+		'viewer-1',
+		'document-1',
+		'viewer-b',
+	);
 	assert.equal(replacement.kind, 'viewer-replaced');
 	assert.equal(coordinator.getState().viewer.socketId, 'viewer-b');
 	assert.equal(
@@ -112,10 +116,31 @@ test('F/G/H: peer, capture, and transport failures share one reset boundary', ()
 test('K: a different logical viewer is deterministically rejected', () => {
 	const coordinator = startWithOwnerAndViewer();
 	assert.equal(
-		coordinator.registerViewer('viewer-2', 'viewer-b').kind,
+		coordinator.registerViewer('viewer-2', 'document-2', 'viewer-b').kind,
 		'rejected',
 	);
 	assert.equal(coordinator.getState().viewer.socketId, 'viewer-a');
+});
+
+test('Safari-style document replacement quiesces the old generation', () => {
+	const coordinator = startWithOwnerAndViewer();
+	const replacement = coordinator.registerViewer(
+		'viewer-1',
+		'document-2',
+		'viewer-b',
+	);
+	assert.equal(replacement.kind, 'viewer-document-replaced');
+	assert.equal(replacement.previousSocketId, 'viewer-a');
+	assert.equal(coordinator.getState().viewer.socketId, 'viewer-a');
+	assert.equal(
+		coordinator.requestReset('session-1', 'viewer-document-replaced').kind,
+		'start-reset',
+	);
+	coordinator.startSession('session-2');
+	assert.equal(
+		coordinator.registerViewer('viewer-1', 'document-2', 'viewer-b').kind,
+		'accepted',
+	);
 });
 
 test('L: duplicate and late signalling is harmless and direct', () => {

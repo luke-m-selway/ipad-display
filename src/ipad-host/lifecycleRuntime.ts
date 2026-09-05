@@ -18,9 +18,11 @@ function publish(result: IpadLifecycleResult): IpadLifecycleResult {
 		const replacement =
 			result.kind === 'viewer-replaced'
 				? ` replace=${result.previousSocketId}->${state.viewer?.socketId ?? 'none'}`
-				: '';
+				: result.kind === 'viewer-document-replaced'
+					? ` document-replace=${result.previousSocketId}`
+					: '';
 		console.log(
-			`[iPad Lifecycle] event=${result.kind}${replacement} generation=${state.generation} session=${state.sessionId ?? 'none'} phase=${state.phase} owner=${state.ownerSocketId ?? 'none'} logicalViewer=${state.viewer?.logicalViewerId ?? 'none'} viewer=${state.viewer?.socketId ?? 'none'} reset=${state.resetReason ?? 'none'}`,
+			`[iPad Lifecycle] event=${result.kind}${replacement} generation=${state.generation} session=${state.sessionId ?? 'none'} phase=${state.phase} owner=${state.ownerSocketId ?? 'none'} logicalViewer=${state.viewer?.logicalViewerId ?? 'none'} document=${state.viewer?.documentId ?? 'none'} viewer=${state.viewer?.socketId ?? 'none'} reset=${state.resetReason ?? 'none'}`,
 		);
 	}
 	stateListener?.(result.state, result);
@@ -61,9 +63,12 @@ export function registerIpadOwner(
 
 export function registerIpadViewer(
 	logicalViewerId: string,
+	documentId: string,
 	socketId: string,
 ): IpadLifecycleResult {
-	return publish(coordinator.registerViewer(logicalViewerId, socketId));
+	return publish(
+		coordinator.registerViewer(logicalViewerId, documentId, socketId),
+	);
 }
 
 export function requestIpadNegotiation(socketId: string): IpadLifecycleResult {

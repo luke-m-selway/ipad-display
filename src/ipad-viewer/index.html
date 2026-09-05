@@ -33,10 +33,25 @@
         const fullscreenHint = document.getElementById('fullscreen-hint');
         const SimplePeer = window['SimplePeer'];
         const connectSocket = window['io'];
-        const user = {
-          id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
-          username: `ipad-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        const VIEWER_ID_STORAGE_KEY = 'ipad-display.logical-viewer-id';
+        const createViewerId = () =>
+          crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+        const getLogicalViewerId = () => {
+          try {
+            const existingId = window.localStorage.getItem(VIEWER_ID_STORAGE_KEY);
+            if (existingId) return existingId;
+            const createdId = createViewerId();
+            window.localStorage.setItem(VIEWER_ID_STORAGE_KEY, createdId);
+            return createdId;
+          } catch {
+            // Storage can be unavailable in private or restricted browser contexts.
+            return createViewerId();
+          }
         };
+        // A socket identifies one transport connection; this ID identifies the
+        // iPad browser profile so a Safari relaunch can atomically replace it.
+        const logicalViewerId = getLogicalViewerId();
+        const viewerDocumentId = createViewerId();
 
         let peer = null;
         let isStreaming = false;
@@ -205,7 +220,10 @@
           const generation = lifecycle?.generation ?? -1;
           if (registeredGeneration === generation) return;
           registeredGeneration = generation;
-          socket.emit('IPAD_REGISTER_VIEWER', { logicalViewerId: user.id });
+          socket.emit('IPAD_REGISTER_VIEWER', {
+            logicalViewerId,
+            documentId: viewerDocumentId,
+          });
         };
 
         createPeer();
@@ -258,9 +276,17 @@
             setStatus('Waiting for host…');
           }
         });
-        socket.on('IPAD_SUPERSEDED', () => setStatus('Session replaced'));
+        socket.on('IPAD_SUPERSEDED', () => {
+          // A different document now owns this persisted viewer identity. It
+          // must not reconnect later and steal authority back from that document.
+          pageIsTearingDown = true;
+          clearViewerSessionState();
+          disposePeer();
+          socket.disconnect();
+          setStatus('Session replaced');
+        });
         socket.on('disconnect', () => {
-          setStatus('Disconnected');
+          if (!pageIsTearingDown) setStatus('Disconnected');
         });
 
         window.addEventListener('beforeunload', () => {

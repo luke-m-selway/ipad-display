@@ -7,6 +7,7 @@ import {
 	registerIpadOwner,
 	registerIpadViewer,
 	requestIpadNegotiation,
+	requestIpadReset,
 } from '../ipad-host/lifecycleRuntime';
 import socketsIPService from './socketsIPService';
 import socketIOServerStore from './store/socketIOServerStore';
@@ -40,7 +41,7 @@ function logLifecycle(event: string): void {
 	if (!isDiagnosticsEnabled) return;
 	const state = getIpadLifecycleState();
 	console.log(
-		`[iPad Lifecycle] ${event} generation=${state.generation} session=${state.sessionId ?? 'none'} phase=${state.phase} owner=${state.ownerSocketId ?? 'none'} viewer=${state.viewer?.socketId ?? 'none'} logicalViewer=${state.viewer?.logicalViewerId ?? 'none'} reset=${state.resetReason ?? 'none'}`,
+		`[iPad Lifecycle] ${event} generation=${state.generation} session=${state.sessionId ?? 'none'} phase=${state.phase} owner=${state.ownerSocketId ?? 'none'} viewer=${state.viewer?.socketId ?? 'none'} logicalViewer=${state.viewer?.logicalViewerId ?? 'none'} document=${state.viewer?.documentId ?? 'none'} reset=${state.resetReason ?? 'none'}`,
 	);
 }
 
@@ -89,17 +90,20 @@ export default class IpadSocket {
 
 		this.socket.on(
 			'IPAD_REGISTER_VIEWER',
-			(payload: { logicalViewerId?: unknown }) => {
+			(payload: { logicalViewerId?: unknown; documentId?: unknown }) => {
 				if (
 					isOwnerSocket(this.socket) ||
 					typeof payload?.logicalViewerId !== 'string' ||
-					payload.logicalViewerId.length === 0
+					payload.logicalViewerId.length === 0 ||
+					typeof payload?.documentId !== 'string' ||
+					payload.documentId.length === 0
 				) {
 					this.socket.emit('IPAD_REJECTED', { reason: 'viewer-required' });
 					return;
 				}
 				const result = registerIpadViewer(
 					payload.logicalViewerId,
+					payload.documentId,
 					this.socket.id,
 				);
 				if (result.kind === 'rejected' || result.kind === 'ignored') {
@@ -112,6 +116,20 @@ export default class IpadSocket {
 					});
 					logLifecycle(
 						`viewer-replaced ${result.previousSocketId}->${this.socket.id}`,
+					);
+				}
+				if (result.kind === 'viewer-document-replaced') {
+					// A new document cannot answer for the old document's peer. Quiesce
+					// the old document before advancing the shared generation.
+					getSocketById(result.previousSocketId)?.emit('IPAD_SUPERSEDED', {
+						generation: result.state.generation,
+					});
+					requestIpadReset(
+						result.state.sessionId ?? '',
+						'viewer-document-replaced',
+					);
+					logLifecycle(
+						`viewer-document-replaced ${result.previousSocketId}->${this.socket.id}`,
 					);
 				}
 				logLifecycle(

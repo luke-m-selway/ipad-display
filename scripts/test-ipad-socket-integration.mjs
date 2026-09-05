@@ -128,7 +128,10 @@ test('real Socket.IO owner-first registration reaches negotiating', async (t) =>
 		(state) =>
 			state.viewer?.socketId === viewer.id && state.ownerSocketId === owner.id,
 	);
-	viewer.emit('IPAD_REGISTER_VIEWER', { logicalViewerId: 'viewer-1' });
+	viewer.emit('IPAD_REGISTER_VIEWER', {
+		logicalViewerId: 'viewer-1',
+		documentId: 'document-1',
+	});
 	await viewerBound;
 
 	const deviceDetails = once(
@@ -147,7 +150,10 @@ test('real Socket.IO viewer-first registration reaches negotiating', async (t) =
 	const viewer = createClient(url, 'viewer');
 	t.after(() => viewer.close());
 	await connect(viewer);
-	viewer.emit('IPAD_REGISTER_VIEWER', { logicalViewerId: 'viewer-1' });
+	viewer.emit('IPAD_REGISTER_VIEWER', {
+		logicalViewerId: 'viewer-1',
+		documentId: 'document-1',
+	});
 	await once(
 		viewer,
 		'IPAD_LIFECYCLE',
@@ -174,6 +180,68 @@ test('real Socket.IO viewer-first registration reaches negotiating', async (t) =
 	viewer.emit('IPAD_DEVICE_DETAILS', { os: 'iPadOS', deviceType: 'tablet' });
 	await deviceDetails;
 	assert.equal(runtime.getIpadLifecycleState().phase, 'negotiating');
+});
+
+test('real Socket.IO document replacement resets before the new document joins', async (t) => {
+	const { runtime, url } = await createHarness(t);
+	runtime.startIpadLifecycleSession('session-document-replacement');
+	const owner = createClient(url, 'owner');
+	t.after(() => owner.close());
+	await connect(owner);
+	const ownerBound = once(
+		owner,
+		'IPAD_LIFECYCLE',
+		(state) => state.ownerSocketId === owner.id,
+	);
+	owner.emit('IPAD_REGISTER_OWNER', {
+		sessionId: 'session-document-replacement',
+	});
+	await ownerBound;
+
+	const viewerA = createClient(url, 'viewer');
+	t.after(() => viewerA.close());
+	await connect(viewerA);
+	const viewerABound = once(
+		viewerA,
+		'IPAD_LIFECYCLE',
+		(state) => state.viewer?.socketId === viewerA.id,
+	);
+	viewerA.emit('IPAD_REGISTER_VIEWER', {
+		logicalViewerId: 'viewer-1',
+		documentId: 'document-a',
+	});
+	await viewerABound;
+
+	const viewerB = createClient(url, 'viewer');
+	t.after(() => viewerB.close());
+	await connect(viewerB);
+	const superseded = once(viewerA, 'IPAD_SUPERSEDED');
+	const resetting = once(
+		viewerB,
+		'IPAD_LIFECYCLE',
+		(state) => state.phase === 'resetting',
+	);
+	viewerB.emit('IPAD_REGISTER_VIEWER', {
+		logicalViewerId: 'viewer-1',
+		documentId: 'document-b',
+	});
+	await superseded;
+	await resetting;
+	assert.equal(runtime.getIpadLifecycleState().viewer.socketId, viewerA.id);
+	assert.equal(runtime.getIpadLifecycleState().phase, 'resetting');
+
+	runtime.startIpadLifecycleSession('session-document-replacement-2');
+	const viewerBound = once(
+		viewerB,
+		'IPAD_LIFECYCLE',
+		(state) => state.viewer?.socketId === viewerB.id,
+	);
+	viewerB.emit('IPAD_REGISTER_VIEWER', {
+		logicalViewerId: 'viewer-1',
+		documentId: 'document-b',
+	});
+	await viewerBound;
+	assert.equal(runtime.getIpadLifecycleState().viewer.socketId, viewerB.id);
 });
 
 test('helper socket startup uses the main-process iPad mode value', () => {

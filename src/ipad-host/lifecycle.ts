@@ -8,6 +8,7 @@ export type IpadLifecyclePhase =
 
 export type IpadViewerBinding = {
 	logicalViewerId: string;
+	documentId: string;
 	socketId: string;
 };
 
@@ -25,6 +26,11 @@ export type IpadLifecycleResult =
 	| { kind: 'accepted'; state: IpadLifecycleState }
 	| {
 			kind: 'viewer-replaced';
+			previousSocketId: string;
+			state: IpadLifecycleState;
+	  }
+	| {
+			kind: 'viewer-document-replaced';
 			previousSocketId: string;
 			state: IpadLifecycleState;
 	  }
@@ -106,6 +112,7 @@ export class IpadLifecycleCoordinator {
 
 	registerViewer(
 		logicalViewerId: string,
+		documentId: string,
 		socketId: string,
 	): IpadLifecycleResult {
 		if (!this.state.sessionId) return this.rejected('no-current-session');
@@ -113,7 +120,7 @@ export class IpadLifecycleCoordinator {
 
 		const currentViewer = this.state.viewer;
 		if (!currentViewer) {
-			this.state.viewer = { logicalViewerId, socketId };
+			this.state.viewer = { logicalViewerId, documentId, socketId };
 			this.state.phase = phaseForBindings(
 				this.state.ownerSocketId,
 				this.state.viewer,
@@ -123,9 +130,16 @@ export class IpadLifecycleCoordinator {
 		if (currentViewer.logicalViewerId !== logicalViewerId) {
 			return this.rejected('different-viewer-active');
 		}
+		if (currentViewer.documentId !== documentId) {
+			return {
+				kind: 'viewer-document-replaced',
+				previousSocketId: currentViewer.socketId,
+				state: this.getState(),
+			};
+		}
 		if (currentViewer.socketId === socketId) return this.accepted();
 
-		this.state.viewer = { logicalViewerId, socketId };
+		this.state.viewer = { logicalViewerId, documentId, socketId };
 		return {
 			kind: 'viewer-replaced',
 			previousSocketId: currentViewer.socketId,

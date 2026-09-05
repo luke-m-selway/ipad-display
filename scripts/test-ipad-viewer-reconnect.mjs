@@ -10,7 +10,10 @@ const viewerScript = viewerHtml.match(
 
 if (!viewerScript) throw new Error('Could not find the iPad viewer script');
 
-function createViewerHarness() {
+function createViewerHarness({
+	storage = new Map(),
+	viewerIds = ['viewer-id'],
+} = {}) {
 	const socketHandlers = new Map();
 	const emitted = [];
 	const peers = [];
@@ -92,6 +95,14 @@ function createViewerHarness() {
 		io: () => socket,
 		location: { origin: 'http://192.168.2.1:3131' },
 		screen: { width: 1024, height: 768 },
+		localStorage: {
+			getItem(key) {
+				return storage.get(key) ?? null;
+			},
+			setItem(key, value) {
+				storage.set(key, value);
+			},
+		},
 		addEventListener() {
 			return undefined;
 		},
@@ -106,7 +117,7 @@ function createViewerHarness() {
 				return undefined;
 			},
 		},
-		crypto: { randomUUID: () => 'viewer-id' },
+		crypto: { randomUUID: () => viewerIds.shift() ?? 'unexpected-viewer-id' },
 		document,
 		navigator: { userAgent: 'Safari test' },
 		window,
@@ -114,7 +125,7 @@ function createViewerHarness() {
 
 	const count = (event) =>
 		emitted.filter((entry) => entry.event === event).length;
-	return { socket, socketHandlers, peers, emitted, count, status };
+	return { socket, socketHandlers, peers, emitted, count, status, storage };
 }
 
 function lifecycle({
@@ -162,6 +173,35 @@ test('viewer registers once per connection and sends one DEVICE_DETAILS payload'
 	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 1);
 });
 
+test('viewer persists its logical identity across a Safari-style document reopen', () => {
+	const storage = new Map();
+	const firstDocument = createViewerHarness({
+		storage,
+		viewerIds: ['viewer-from-first-document'],
+	});
+	firstDocument.socketHandlers.get('connect')();
+	assert.equal(firstDocument.emitted[0].event, 'IPAD_REGISTER_VIEWER');
+	assert.equal(
+		firstDocument.emitted[0].payload.logicalViewerId,
+		'viewer-from-first-document',
+	);
+
+	const reopenedDocument = createViewerHarness({
+		storage,
+		viewerIds: ['viewer-should-not-be-used'],
+	});
+	reopenedDocument.socketHandlers.get('connect')();
+	assert.equal(reopenedDocument.emitted[0].event, 'IPAD_REGISTER_VIEWER');
+	assert.equal(
+		reopenedDocument.emitted[0].payload.logicalViewerId,
+		'viewer-from-first-document',
+	);
+	assert.notEqual(
+		firstDocument.emitted[0].payload.documentId,
+		reopenedDocument.emitted[0].payload.documentId,
+	);
+});
+
 test('same-page socket A to B reconnect retains the peer and does not renegotiate', () => {
 	const harness = createViewerHarness();
 	connectAndAuthorize(harness, lifecycle({ phase: 'streaming' }));
@@ -176,6 +216,10 @@ test('same-page socket A to B reconnect retains the peer and does not renegotiat
 	assert.equal(harness.peers.length, 1);
 	assert.equal(firstPeer.destroyed, false);
 	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 0);
+	assert.equal(
+		harness.emitted[0].payload.documentId,
+		harness.emitted[1].payload.documentId,
+	);
 });
 
 test('unexpected peer close reconnects once and creates one fresh answerer', () => {
@@ -219,7 +263,7 @@ test('generation-bound CALL_USER emits one direct CALL_ACCEPTED', () => {
 	assert.equal(harness.count('IPAD_SIGNAL'), 1);
 });
 
-test('a different active viewer rejection does not retry until a new generation exists', () => {
+test('a rejected different viewer remains able to join a later generation', () => {
 	const harness = createViewerHarness();
 	connectAndAuthorize(
 		harness,
@@ -238,4 +282,9 @@ test('a different active viewer rejection does not retry until a new generation 
 		lifecycle({ generation: 2, viewerSocketId: null, phase: 'waiting-owner' }),
 	);
 	assert.equal(harness.count('IPAD_REGISTER_VIEWER'), registrations + 1);
+
+	harness.socketHandlers.get('IPAD_LIFECYCLE')(
+		lifecycle({ generation: 2, viewerSocketId: 'viewer-a' }),
+	);
+	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 1);
 });
