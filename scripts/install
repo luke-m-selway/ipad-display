@@ -6,6 +6,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_ROOT="${HOME}/.local/lib/ipad-display"
 RUNTIME_ROOT="$INSTALL_ROOT/runtime"
+NPM_CACHE="$INSTALL_ROOT/npm-cache"
 NODE_VERSION="v23.11.1"
 NODE_DIST="node-${NODE_VERSION}-darwin-x64"
 NODE_DIR="$RUNTIME_ROOT/$NODE_DIST"
@@ -40,7 +41,7 @@ if ! xcode-select -p >/dev/null 2>&1 || ! command -v clang >/dev/null 2>&1; then
   exit 2
 fi
 
-mkdir -p "$RUNTIME_ROOT" "$INSTALL_ROOT" "$USER_BIN"
+mkdir -p "$RUNTIME_ROOT" "$INSTALL_ROOT" "$NPM_CACHE" "$USER_BIN"
 
 install_node_runtime() {
   if [[ -x "$NODE_BIN/node" && -x "$NODE_BIN/npm" ]]; then
@@ -76,6 +77,9 @@ install_node_runtime() {
 
 install_node_runtime
 export PATH="$NODE_BIN:$PATH"
+# Keep bootstrap package state isolated from any ambient ~/.npm ownership/cache
+# problems so a previously broken global npm cache cannot block deployment.
+export npm_config_cache="$NPM_CACHE"
 
 say "Installing repository dependencies..."
 (
