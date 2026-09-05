@@ -7,9 +7,10 @@ import {
 const coordinator = new IpadLifecycleCoordinator();
 
 let resetHandler: ((sessionId: string, reason: string) => void) | null = null;
-let stateListener:
-	| ((state: IpadLifecycleState, result: IpadLifecycleResult) => void)
-	| null = null;
+const stateListeners = new Set<
+	(state: IpadLifecycleState, result: IpadLifecycleResult) => void
+>();
+let inputHandler: ((input: IpadInput) => void) | null = null;
 const isDiagnosticsEnabled = process.env.IPAD_STALL_DIAGNOSTICS === '1';
 
 function publish(result: IpadLifecycleResult): IpadLifecycleResult {
@@ -25,7 +26,10 @@ function publish(result: IpadLifecycleResult): IpadLifecycleResult {
 			`[iPad Lifecycle] event=${result.kind}${replacement} generation=${state.generation} session=${state.sessionId ?? 'none'} phase=${state.phase} owner=${state.ownerSocketId ?? 'none'} logicalViewer=${state.viewer?.logicalViewerId ?? 'none'} document=${state.viewer?.documentId ?? 'none'} viewer=${state.viewer?.socketId ?? 'none'} reset=${state.resetReason ?? 'none'}`,
 		);
 	}
-	stateListener?.(result.state, result);
+	// forEach, not for..of: the test harness transpiles this file with an
+	// implicit ES3 target, which down-levels Set iteration as array-like
+	// (.length/index access) and would silently skip every listener.
+	stateListeners.forEach((listener) => listener(result.state, result));
 	if (result.kind === 'start-reset') {
 		resetHandler?.(result.sessionId, result.reason);
 	}
@@ -45,7 +49,15 @@ export function setIpadLifecycleResetHandler(
 export function setIpadLifecycleStateListener(
 	listener: (state: IpadLifecycleState, result: IpadLifecycleResult) => void,
 ): void {
-	stateListener = listener;
+	stateListeners.clear();
+	stateListeners.add(listener);
+}
+
+export function addIpadLifecycleStateListener(
+	listener: (state: IpadLifecycleState, result: IpadLifecycleResult) => void,
+): () => void {
+	stateListeners.add(listener);
+	return () => stateListeners.delete(listener);
 }
 
 export function startIpadLifecycleSession(
@@ -84,6 +96,35 @@ export function getIpadSignalTarget(
 
 export function markIpadStreaming(socketId: string): IpadLifecycleResult {
 	return publish(coordinator.markStreaming(socketId));
+}
+
+export type IpadInput = {
+	action: 'click' | 'down' | 'up' | 'drag' | 'scroll' | 'move';
+	x: number;
+	y: number;
+	deltaX?: number;
+	deltaY?: number;
+};
+
+export function setIpadInputHandler(
+	handler: ((input: IpadInput) => void) | null,
+): void {
+	inputHandler = handler;
+}
+
+export function acceptIpadInput(
+	socketId: string,
+	generation: number,
+	sessionId: string,
+	input: IpadInput,
+): IpadLifecycleResult {
+	const result = coordinator.acceptInput(socketId, generation, sessionId);
+	if (result.kind === 'accepted') inputHandler?.(input);
+	return result;
+}
+
+export function isIpadTouchEnabled(): boolean {
+	return inputHandler !== null;
 }
 
 export function requestIpadReset(

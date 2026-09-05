@@ -62,6 +62,9 @@
         let registeredGeneration = null;
         let deviceDetailsGeneration = null;
         let needsFreshPeer = false;
+        let touchEnabled = false;
+        let touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
+        const DRAG_THRESHOLD_PX = 12;
 
         const setStatus = (text, isStreaming = false) => {
           status.textContent = text;
@@ -73,6 +76,159 @@
 
         const updateFullscreenHint = () => {
           fullscreenHint.hidden = !isStreaming || Boolean(isFullscreen());
+        };
+
+        const videoPoint = (touch) => {
+          if (!touch || !video.videoWidth || !video.videoHeight) return null;
+          const box = video.getBoundingClientRect();
+          const scale = Math.min(box.width / video.videoWidth, box.height / video.videoHeight);
+          const width = video.videoWidth * scale;
+          const height = video.videoHeight * scale;
+          const left = box.left + (box.width - width) / 2;
+          const top = box.top + (box.height - height) / 2;
+          if (touch.clientX < left || touch.clientX > left + width || touch.clientY < top || touch.clientY > top + height) return null;
+          return {
+            x: (touch.clientX - left) / width,
+            y: (touch.clientY - top) / height,
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+          };
+        };
+
+        const touchWithId = (touches, identifier) =>
+          Array.from(touches).find((touch) => touch.identifier === identifier);
+
+        const centroid = (touches) => {
+          const points = Array.from(touches).slice(0, 2).map(videoPoint);
+          if (points.length !== 2 || !points[0] || !points[1]) return null;
+          return {
+            x: (points[0].x + points[1].x) / 2,
+            y: (points[0].y + points[1].y) / 2,
+            clientX: (points[0].clientX + points[1].clientX) / 2,
+            clientY: (points[0].clientY + points[1].clientY) / 2,
+          };
+        };
+
+        const canSendTouch = () =>
+          touchEnabled && isStreaming && Boolean(isFullscreen()) && lifecycle &&
+          lifecycle.phase === 'streaming' && lifecycle.viewer?.socketId === socket.id;
+
+        const emitInput = (action, point, deltaX, deltaY) => {
+          if (!canSendTouch() || !point) return;
+          const payload = {
+            action,
+            x: point.x,
+            y: point.y,
+            generation: lifecycle.generation,
+            sessionId: lifecycle.sessionId,
+          };
+          if (action === 'scroll') {
+            payload.deltaX = deltaX;
+            payload.deltaY = deltaY;
+          }
+          const emitter = action === 'drag' || action === 'scroll' || action === 'move'
+            ? (socket.volatile || socket) : socket;
+          emitter.emit('IPAD_INPUT', payload);
+        };
+
+        const releaseActiveDrag = () => {
+          if (touchGesture.mode === 'dragging' && touchGesture.last) {
+            emitInput('up', touchGesture.last);
+            touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
+          }
+        };
+
+        const ignoreTouchesUntilLift = () => {
+          releaseActiveDrag();
+          touchGesture = { mode: 'ignored', primaryId: null, start: null, last: null };
+        };
+
+        const handleTouchStart = (event) => {
+          if (!canSendTouch()) return;
+          if (event.touches.length >= 3) {
+            event.preventDefault();
+            ignoreTouchesUntilLift();
+            return;
+          }
+          if (touchGesture.mode === 'ignored' || touchGesture.mode === 'dragging' || touchGesture.mode === 'scrolling') return;
+          if (event.touches.length === 1) {
+            const start = videoPoint(event.touches[0]);
+            if (!start) {
+              ignoreTouchesUntilLift();
+              return;
+            }
+            event.preventDefault();
+            touchGesture = { mode: 'pending', primaryId: event.touches[0].identifier, start, last: start };
+            return;
+          }
+          const center = centroid(event.touches);
+          event.preventDefault();
+          if (!center || touchGesture.mode !== 'pending') {
+            ignoreTouchesUntilLift();
+            return;
+          }
+          // This is a positioning move for scrolling, not general hover forwarding.
+          emitInput('move', center);
+          touchGesture = { mode: 'scrolling', primaryId: null, start: null, last: center };
+        };
+
+        const handleTouchMove = (event) => {
+          if (!canSendTouch()) return;
+          if (event.touches.length >= 3) {
+            event.preventDefault();
+            ignoreTouchesUntilLift();
+            return;
+          }
+          if (touchGesture.mode === 'ignored') return;
+          if (touchGesture.mode === 'scrolling') {
+            const center = centroid(event.touches);
+            if (!center || !touchGesture.last) return;
+            event.preventDefault();
+            const deltaX = center.x - touchGesture.last.x;
+            const deltaY = center.y - touchGesture.last.y;
+            if (deltaX || deltaY) emitInput('scroll', center, deltaX, deltaY);
+            touchGesture.last = center;
+            return;
+          }
+          const touch = touchWithId(event.touches, touchGesture.primaryId);
+          const point = videoPoint(touch);
+          if (!point) return;
+          event.preventDefault();
+          if (touchGesture.mode === 'pending') {
+            const distance = Math.hypot(point.clientX - touchGesture.start.clientX, point.clientY - touchGesture.start.clientY);
+            if (distance > DRAG_THRESHOLD_PX) {
+              emitInput('down', touchGesture.start);
+              touchGesture.mode = 'dragging';
+            }
+          }
+          if (touchGesture.mode === 'dragging') emitInput('drag', point);
+          touchGesture.last = point;
+        };
+
+        const handleTouchEnd = (event) => {
+          if (!canSendTouch()) return;
+          if (touchGesture.mode === 'ignored') {
+            if (event.touches.length === 0) touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
+            return;
+          }
+          if (touchGesture.mode === 'scrolling') {
+            if (event.touches.length < 2) touchGesture = event.touches.length ? { mode: 'ignored', primaryId: null, start: null, last: null } : { mode: 'idle', primaryId: null, start: null, last: null };
+            return;
+          }
+          const ended = touchWithId(event.changedTouches, touchGesture.primaryId);
+          if (!ended) return;
+          event.preventDefault();
+          const point = videoPoint(ended) || touchGesture.last;
+          if (touchGesture.mode === 'pending' && point) emitInput('click', point);
+          if (touchGesture.mode === 'dragging' && point) emitInput('up', point);
+          touchGesture = event.touches.length ? { mode: 'ignored', primaryId: null, start: null, last: null } : { mode: 'idle', primaryId: null, start: null, last: null };
+        };
+
+        const handleTouchCancel = (event) => {
+          if (!canSendTouch()) return;
+          event.preventDefault();
+          ignoreTouchesUntilLift();
+          if (event.touches.length === 0) touchGesture = { mode: 'idle', primaryId: null, start: null, last: null };
         };
 
         const requestFullscreenFromGesture = () => {
@@ -102,8 +258,16 @@
         // stream setup so requesting it never recreates the PeerConnection.
         document.addEventListener('pointerup', enterFullscreenOnTap);
         document.addEventListener('touchend', enterFullscreenOnTap);
-        document.addEventListener('fullscreenchange', updateFullscreenHint);
-        document.addEventListener('webkitfullscreenchange', updateFullscreenHint);
+        const handleFullscreenChange = () => {
+          if (!isFullscreen()) releaseActiveDrag();
+          updateFullscreenHint();
+        };
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+        document.addEventListener('touchstart', handleTouchStart, { passive: false });
+        document.addEventListener('touchmove', handleTouchMove, { passive: false });
+        document.addEventListener('touchend', handleTouchEnd, { passive: false });
+        document.addEventListener('touchcancel', handleTouchCancel, { passive: false });
 
         // This is the stock Deskreen viewer contract: a non-initiating
         // simple-peer receives CALL_USER signals and returns CALL_ACCEPTED signals.
@@ -239,6 +403,11 @@
 		  registerForCurrentGeneration();
         });
 
+        socket.on('IPAD_TOUCH_CAPABILITY', ({ enabled }) => {
+          touchEnabled = enabled === true;
+          if (!touchEnabled) releaseActiveDrag();
+        });
+
         socket.on('IPAD_LIFECYCLE', (nextLifecycle) => {
           lifecycle = nextLifecycle;
           if (
@@ -280,6 +449,7 @@
           // A different document now owns this persisted viewer identity. It
           // must not reconnect later and steal authority back from that document.
           pageIsTearingDown = true;
+		  releaseActiveDrag();
           clearViewerSessionState();
           disposePeer();
           socket.disconnect();
@@ -290,6 +460,7 @@
         });
 
         window.addEventListener('beforeunload', () => {
+		  releaseActiveDrag();
           pageIsTearingDown = true;
         });
       })();
