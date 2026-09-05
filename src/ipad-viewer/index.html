@@ -81,8 +81,15 @@
           status.hidden = isStreaming;
         };
 
+        // iPadOS WebKit can expose element fullscreen only through its legacy
+        // state properties, leaving the modern element slots unset.
         const isFullscreen = () =>
-          document.fullscreenElement || document.webkitFullscreenElement;
+          Boolean(
+            document.fullscreenElement ||
+            document.webkitFullscreenElement ||
+            document.webkitCurrentFullScreenElement ||
+            document.webkitIsFullScreen,
+          );
 
         const updateFullscreenHint = () => {
           fullscreenHint.hidden = !isStreaming || Boolean(isFullscreen());

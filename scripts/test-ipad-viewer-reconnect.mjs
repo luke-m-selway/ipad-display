@@ -140,6 +140,8 @@ function createViewerHarness({
 	const document = createEventTarget({
 		fullscreenElement: null,
 		webkitFullscreenElement: null,
+		webkitCurrentFullScreenElement: null,
+		webkitIsFullScreen: false,
 		getElementById(id) {
 			return {
 				video,
@@ -255,6 +257,15 @@ function inputActions(harness) {
 	return harness.emitted
 		.filter((entry) => entry.event === 'IPAD_INPUT')
 		.map((entry) => entry.payload.action);
+}
+
+function tapTouchSurface(harness, identifier = 1) {
+	harness.touchSurface.dispatch('touchstart', {
+		touches: [touch(identifier, 20, 20)],
+	});
+	harness.touchSurface.dispatch('touchend', {
+		changedTouches: [touch(identifier, 20, 20)],
+	});
 }
 
 test('viewer waits for an authoritative owner before sending DEVICE_DETAILS', () => {
@@ -430,6 +441,35 @@ test('active touch mode keeps the video out of the gesture path and suppresses n
 	assert.equal(harness.touchSurface.listenerCount('touchstart'), 1);
 	assert.equal(harness.fullscreenCalls.nativeVideo, 0);
 	assert.match(viewerHtml, /#touch-surface[^}]*touch-action: none/);
+});
+
+test('WebKit current fullscreen element enables the touch gate', () => {
+	const harness = createViewerHarness();
+	activateTouchStreaming(harness);
+	harness.document.webkitCurrentFullScreenElement = harness.document.documentElement;
+
+	tapTouchSurface(harness);
+
+	assert.deepEqual(inputActions(harness), ['click']);
+});
+
+test('WebKit fullscreen boolean enables the touch gate', () => {
+	const harness = createViewerHarness();
+	activateTouchStreaming(harness);
+	harness.document.webkitIsFullScreen = true;
+
+	tapTouchSurface(harness);
+
+	assert.deepEqual(inputActions(harness), ['click']);
+});
+
+test('touch input remains blocked until an element fullscreen state is observed', () => {
+	const harness = createViewerHarness();
+	activateTouchStreaming(harness);
+
+	tapTouchSurface(harness);
+
+	assert.deepEqual(inputActions(harness), []);
 });
 
 test('the local touch control releases an active drag, blocks input while disabled, and restores Mac control', () => {
