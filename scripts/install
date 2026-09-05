@@ -1,0 +1,141 @@
+#!/bin/bash
+# Idempotent bootstrap for the validated Intel macOS Ventura target.
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+INSTALL_ROOT="${HOME}/.local/lib/ipad-display"
+RUNTIME_ROOT="$INSTALL_ROOT/runtime"
+NODE_VERSION="v23.11.1"
+NODE_DIST="node-${NODE_VERSION}-darwin-x64"
+NODE_DIR="$RUNTIME_ROOT/$NODE_DIST"
+NODE_BIN="$NODE_DIR/bin"
+USER_BIN="${HOME}/.local/bin"
+WRAPPER_NAME="ipad"
+FIXED_IP="192.168.2.1"
+FIXED_PORT="3131"
+OPEN_SETTINGS=false
+
+if [[ "${1:-}" == "--open-settings" ]]; then
+  OPEN_SETTINGS=true
+elif [[ -n "${1:-}" ]]; then
+  echo "Usage: ./scripts/install [--open-settings]" >&2
+  exit 2
+fi
+
+say() { printf '%s\n' "$*"; }
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ "$(uname -m)" == "x86_64" ]] || fail "This bootstrap currently supports Intel/x86_64 Macs only."
+[[ "$(sw_vers -productVersion)" == 13.* ]] || fail "This bootstrap currently supports macOS Ventura 13.x only."
+
+for tool in curl tar shasum awk; do
+  command -v "$tool" >/dev/null 2>&1 || fail "Required macOS tool is missing: $tool"
+done
+
+if ! xcode-select -p >/dev/null 2>&1 || ! command -v clang >/dev/null 2>&1; then
+  say "Xcode Command Line Tools are required. Opening Apple's installer..."
+  xcode-select --install >/dev/null 2>&1 || true
+  say "Finish the Command Line Tools installation, then rerun ./scripts/install."
+  exit 2
+fi
+
+mkdir -p "$RUNTIME_ROOT" "$INSTALL_ROOT" "$USER_BIN"
+
+install_node_runtime() {
+  if [[ -x "$NODE_BIN/node" && -x "$NODE_BIN/npm" ]]; then
+    say "Node runtime already installed: $NODE_VERSION"
+    return
+  fi
+
+  local tmpdir archive sums filename expected actual
+  tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/ipad-display-node.XXXXXX")"
+  trap 'rm -rf "$tmpdir"' RETURN
+  filename="${NODE_DIST}.tar.gz"
+  archive="$tmpdir/$filename"
+  sums="$tmpdir/SHASUMS256.txt"
+
+  say "Downloading Node $NODE_VERSION for Intel macOS..."
+  curl --fail --location --silent --show-error \
+    "https://nodejs.org/dist/${NODE_VERSION}/${filename}" -o "$archive"
+  curl --fail --location --silent --show-error \
+    "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt" -o "$sums"
+
+  expected="$(awk -v f="$filename" '$2 == f { print $1 }' "$sums")"
+  [[ -n "$expected" ]] || fail "Could not find checksum for $filename"
+  actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+  [[ "$actual" == "$expected" ]] || fail "Node runtime checksum verification failed"
+
+  rm -rf "$NODE_DIR"
+  tar -xzf "$archive" -C "$RUNTIME_ROOT"
+  [[ -x "$NODE_BIN/node" && -x "$NODE_BIN/npm" ]] || fail "Node runtime extraction was incomplete"
+  trap - RETURN
+  rm -rf "$tmpdir"
+  say "Installed Node $NODE_VERSION with verified checksum."
+}
+
+install_node_runtime
+export PATH="$NODE_BIN:$PATH"
+
+say "Installing repository dependencies..."
+(
+  cd "$REPO_DIR"
+  npm ci
+  cd src/client-viewer
+  npm ci
+)
+
+say "Building iPad Display..."
+(
+  cd "$REPO_DIR"
+  npm run build
+)
+
+say "Building touch input helper..."
+clang -fobjc-arc -framework Foundation -framework ApplicationServices \
+  "$REPO_DIR/scripts/ipad-input-helper.m" -o "$INSTALL_ROOT/ipad-input-helper"
+
+wrapper_dir="$USER_BIN"
+if [[ -d /usr/local/bin && -w /usr/local/bin ]]; then
+  wrapper_dir="/usr/local/bin"
+fi
+wrapper_path="$wrapper_dir/$WRAPPER_NAME"
+cat > "$wrapper_path" <<EOF
+#!/bin/bash
+export PATH="$NODE_BIN:\$PATH"
+exec "$REPO_DIR/scripts/ipad" "\$@"
+EOF
+chmod 755 "$wrapper_path"
+say "Installed command wrapper: $wrapper_path"
+
+if [[ ":$PATH:" != *":$wrapper_dir:"* ]]; then
+  say ""
+  say "$wrapper_dir is not currently on PATH. Add this once to ~/.zprofile:"
+  say "  export PATH=\"$wrapper_dir:\$PATH\""
+fi
+
+if "$OPEN_SETTINGS"; then
+  open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture' >/dev/null 2>&1 || true
+  open 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility' >/dev/null 2>&1 || true
+fi
+
+say ""
+say "Bootstrap complete."
+say "Run: $wrapper_path doctor"
+say "Then start display-only with: $wrapper_path"
+say "Or start touch mode with: $wrapper_path touch"
+
+if ! ifconfig | grep -q "inet ${FIXED_IP} "; then
+  say ""
+  say "USB/private network is not active yet. On the Mac:"
+  say "  1. Connect and trust the iPad over USB."
+  say "  2. Open System Settings -> General -> Sharing -> Internet Sharing."
+  say "  3. Share from Wi-Fi to iPad USB and enable Internet Sharing."
+  say "  4. Confirm the Mac exposes ${FIXED_IP}."
+  say "  5. Open http://${FIXED_IP}:${FIXED_PORT}/ on the iPad and Add to Home Screen."
+fi
+
+say ""
+say "macOS privacy permissions are never granted automatically."
+say "Screen Recording is required for display capture; Accessibility is required for touch."
+say "Use --open-settings on a later installer rerun to open those Settings panes."
