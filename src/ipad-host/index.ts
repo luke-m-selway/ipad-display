@@ -207,8 +207,14 @@ async function restartSharingSession(
 	try {
 		const previousSession = sharingSession;
 		sharingSession = null;
-		previousSession?.destroy();
 		const deskreenGlobal = getDeskreenGlobal();
+		// Helper-window destruction is asynchronous, but this slot belongs to the
+		// retiring generation and must be released before its replacement admits
+		// the same logical iPad viewer.
+		void deskreenGlobal.connectedDevicesService.disconnectDeviceByID(
+			previousSession?.deviceID ?? '',
+		);
+		previousSession?.destroy();
 		deskreenGlobal.sharingSessionService.sharingSessions.delete(sessionID);
 		deskreenGlobal.roomIDService.unmarkRoomIDAsTaken(IPAD_FIXED_ROOM_ID);
 		if (!virtualDisplay) throw new Error('Virtual display source was lost');
