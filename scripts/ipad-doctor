@@ -9,6 +9,9 @@ NODE_VERSION="v23.11.1"
 NODE_DIST="node-${NODE_VERSION}-darwin-x64"
 NODE_BIN="$INSTALL_ROOT/runtime/$NODE_DIST/bin"
 INPUT_HELPER="$INSTALL_ROOT/ipad-input-helper"
+INPUT_HELPER_SOURCE="$REPO_DIR/scripts/ipad-input-helper.m"
+HOST_ENTRY="$REPO_DIR/out/main/ipad-host.js"
+VIEWER_ENTRY="$REPO_DIR/out/ipad-viewer/index.html"
 FIXED_IP="192.168.2.1"
 FIXED_PORT="3131"
 failures=0
@@ -56,22 +59,30 @@ else
   fail "Viewer npm dependencies are incomplete; run ./scripts/install"
 fi
 
-if [[ -f "$REPO_DIR/out/main/ipad-host.js" && -f "$REPO_DIR/out/ipad-viewer/index.html" ]]; then
-  pass "Built host and viewer assets present"
+if [[ -f "$HOST_ENTRY" && -f "$VIEWER_ENTRY" ]]; then
+  if [[ -n "$(find "$REPO_DIR/src" "$REPO_DIR/electron.vite.config.ts" "$REPO_DIR/package.json" -newer "$HOST_ENTRY" -print -quit 2>/dev/null)" ]]; then
+    warn "Built host assets are older than repository sources; run ./scripts/install"
+  else
+    pass "Built host and viewer assets present and current"
+  fi
 else
   fail "Built host/viewer assets missing; run ./scripts/install"
 fi
 
 if [[ -x "$INPUT_HELPER" ]]; then
   pass "Touch input helper installed"
-  "$INPUT_HELPER" --accessibility-check </dev/null >/dev/null 2>&1
-  ax_status=$?
-  if [[ $ax_status -eq 0 ]]; then
-    pass "Accessibility permission trusted for touch helper"
-  elif [[ $ax_status -eq 2 ]]; then
-    warn "Accessibility permission not yet granted for touch helper"
+  if [[ -f "$INPUT_HELPER_SOURCE" && "$INPUT_HELPER_SOURCE" -nt "$INPUT_HELPER" ]]; then
+    warn "Touch input helper is older than its source; run ./scripts/install before checking Accessibility"
   else
-    warn "Could not determine Accessibility trust from touch helper"
+    "$INPUT_HELPER" --accessibility-check </dev/null >/dev/null 2>&1
+    ax_status=$?
+    if [[ $ax_status -eq 0 ]]; then
+      pass "Accessibility permission trusted for touch helper"
+    elif [[ $ax_status -eq 2 ]]; then
+      warn "Accessibility permission not yet granted for touch helper"
+    else
+      warn "Could not determine Accessibility trust from touch helper"
+    fi
   fi
 else
   fail "Touch input helper missing; run ./scripts/install"
@@ -107,7 +118,7 @@ else
   pass "Port ${FIXED_PORT} is free"
 fi
 
-info "Screen Recording is intentionally verified by the capture host at runtime; doctor does not impersonate that TCC identity."
+info "Screen Recording is verified by the capture host at runtime; doctor does not impersonate that TCC identity."
 info "System Events/Automation for Mission Control and Spaces is intentionally not triggered by doctor."
 
 printf '\n'
