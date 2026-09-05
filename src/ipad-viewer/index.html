@@ -47,6 +47,7 @@
         let joinAttempt = 0;
         let peerRecoveryInProgress = false;
         let pageIsTearingDown = false;
+        let viewerHasJoinedRoom = false;
 
         const setStatus = (text, isStreaming = false) => {
           status.textContent = text;
@@ -112,6 +113,7 @@
         const clearViewerSessionState = () => {
           partner = null;
           deviceDetailsSent = false;
+          viewerHasJoinedRoom = false;
           isStreaming = false;
           video.srcObject = null;
           joinAttempt += 1;
@@ -183,6 +185,21 @@
           createPeer();
         };
 
+        const sendDeviceDetailsWhenReady = () => {
+          if (!viewerHasJoinedRoom || !partner || deviceDetailsSent) return;
+
+          deviceDetailsSent = true;
+          sendMessage('DEVICE_DETAILS', {
+            os: 'iPadOS',
+            deviceType: 'tablet',
+            browser: navigator.userAgent,
+            deviceScreenWidth: window.screen.width,
+            deviceScreenHeight: window.screen.height,
+          });
+          peerRecoveryInProgress = false;
+          setStatus('Waiting for host…');
+        };
+
         createPeer();
 
         socket.on('connect', () => {
@@ -206,20 +223,16 @@
         });
 
         socket.on('USER_ENTER', ({ users }) => {
+          viewerHasJoinedRoom = users.some(
+            (candidate) => candidate.username === user.username,
+          );
           const host = users.find((candidate) => candidate.username !== user.username);
-          if (!host || deviceDetailsSent) return;
+          if (!host) return;
 
           partner = host;
-          deviceDetailsSent = true;
-          sendMessage('DEVICE_DETAILS', {
-            os: 'iPadOS',
-            deviceType: 'tablet',
-            browser: navigator.userAgent,
-            deviceScreenWidth: window.screen.width,
-            deviceScreenHeight: window.screen.height,
-          });
-          peerRecoveryInProgress = false;
-          setStatus('Waiting for host…');
+          // The host must not start an offer until this socket has joined the
+          // room; recovery can otherwise observe the owner before itself.
+          sendDeviceDetailsWhenReady();
         });
 
         socket.on('MESSAGE', (message) => {
