@@ -8,17 +8,14 @@ const viewerScript = viewerHtml.match(
 	/<script>\s*([\s\S]*?)\s*<\/script>/,
 )?.[1];
 
-if (!viewerScript) {
-	throw new Error('Could not find the iPad viewer script');
-}
+if (!viewerScript) throw new Error('Could not find the iPad viewer script');
 
 function createViewerHarness() {
 	const socketHandlers = new Map();
-	const emittedMessages = [];
-	const scheduledCallbacks = [];
+	const emitted = [];
 	const peers = [];
-	const windowHandlers = new Map();
 	const socket = {
+		id: 'viewer-a',
 		connected: true,
 		disconnectCount: 0,
 		connectCount: 0,
@@ -26,8 +23,7 @@ function createViewerHarness() {
 			socketHandlers.set(event, handler);
 		},
 		emit(event, payload) {
-			emittedMessages.push({ event, payload });
-			if (event === 'GET_MY_IP') payload();
+			emitted.push({ event, payload });
 		},
 		disconnect() {
 			this.disconnectCount += 1;
@@ -96,11 +92,8 @@ function createViewerHarness() {
 		io: () => socket,
 		location: { origin: 'http://192.168.2.1:3131' },
 		screen: { width: 1024, height: 768 },
-		setTimeout(callback) {
-			scheduledCallbacks.push(callback);
-		},
-		addEventListener(event, handler) {
-			windowHandlers.set(event, handler);
+		addEventListener() {
+			return undefined;
 		},
 	};
 
@@ -119,156 +112,130 @@ function createViewerHarness() {
 		window,
 	});
 
-	const flushJoinAttempt = () => {
-		const callback = scheduledCallbacks.shift();
-		assert.ok(callback, 'expected a scheduled join attempt');
-		callback();
-	};
-	const countDeviceDetails = () =>
-		emittedMessages.filter(
-			({ event, payload }) =>
-				event === 'MESSAGE' && payload.type === 'DEVICE_DETAILS',
-		).length;
-	const countCallAccepted = () =>
-		emittedMessages.filter(
-			({ event, payload }) =>
-				event === 'MESSAGE' && payload.type === 'CALL_ACCEPTED',
-		).length;
-	const getLatestUserEnter = () => {
-		const userEnter = [...emittedMessages]
-			.reverse()
-			.find(({ event }) => event === 'USER_ENTER');
-		assert.ok(userEnter, 'expected the viewer to enter the room');
-		return userEnter.payload;
-	};
+	const count = (event) =>
+		emitted.filter((entry) => entry.event === event).length;
+	return { socket, socketHandlers, peers, emitted, count, status };
+}
 
+function lifecycle({
+	generation = 1,
+	sessionId = `session-${generation}`,
+	phase = 'waiting-viewer',
+	viewerSocketId = 'viewer-a',
+	ownerSocketId = 'owner-1',
+} = {}) {
 	return {
-		socket,
-		socketHandlers,
-		peers,
-		windowHandlers,
-		emittedMessages,
-		flushJoinAttempt,
-		countDeviceDetails,
-		countCallAccepted,
-		getLatestUserEnter,
+		generation,
+		sessionId,
+		phase,
+		ownerSocketId,
+		viewer: viewerSocketId
+			? { logicalViewerId: 'viewer-id', socketId: viewerSocketId }
+			: null,
 	};
 }
 
-const host = { username: 'iPad-Host' };
-
-function connectAndJoin(harness) {
+function connectAndAuthorize(harness, state = lifecycle()) {
 	harness.socketHandlers.get('connect')();
-	harness.flushJoinAttempt();
-	harness.socketHandlers.get('USER_ENTER')({
-		users: [host, harness.getLatestUserEnter()],
-	});
+	harness.socketHandlers.get('IPAD_LIFECYCLE')(state);
 }
 
-test('iPad viewer waits for its room membership before sending DEVICE_DETAILS', () => {
+test('viewer waits for an authoritative owner before sending DEVICE_DETAILS', () => {
 	const harness = createViewerHarness();
+	connectAndAuthorize(
+		harness,
+		lifecycle({ phase: 'waiting-owner', ownerSocketId: null }),
+	);
+	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 0);
 
+	harness.socketHandlers.get('IPAD_LIFECYCLE')(lifecycle());
+	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 1);
+});
+
+test('viewer registers once per connection and sends one DEVICE_DETAILS payload', () => {
+	const harness = createViewerHarness();
+	connectAndAuthorize(harness);
+	assert.equal(harness.count('IPAD_REGISTER_VIEWER'), 1);
+	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 1);
+
+	harness.socketHandlers.get('IPAD_LIFECYCLE')(lifecycle());
+	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 1);
+});
+
+test('same-page socket A to B reconnect retains the peer and does not renegotiate', () => {
+	const harness = createViewerHarness();
+	connectAndAuthorize(harness, lifecycle({ phase: 'streaming' }));
+	const firstPeer = harness.peers[0];
+
+	harness.socket.id = 'viewer-b';
 	harness.socketHandlers.get('connect')();
-	harness.flushJoinAttempt();
-	harness.socketHandlers.get('USER_ENTER')({ users: [host] });
-	assert.equal(harness.countDeviceDetails(), 0);
+	harness.socketHandlers.get('IPAD_LIFECYCLE')(
+		lifecycle({ phase: 'streaming', viewerSocketId: 'viewer-b' }),
+	);
 
-	harness.socketHandlers.get('USER_ENTER')({
-		users: [host, harness.getLatestUserEnter()],
-	});
-	assert.equal(harness.countDeviceDetails(), 1);
-});
-
-test('iPad viewer joins after a locked old room announces the replacement host', () => {
-	const harness = createViewerHarness();
-
-	harness.socketHandlers.get('connect')();
-	harness.flushJoinAttempt();
-	harness.socketHandlers.get('ROOM_LOCKED')();
-	harness.socketHandlers.get('USER_ENTER')({ users: [host] });
-
-	assert.equal(harness.countDeviceDetails(), 0);
-	const replacementJoin = harness.getLatestUserEnter();
-	harness.socketHandlers.get('USER_ENTER')({
-		users: [host, replacementJoin],
-	});
-	assert.equal(harness.countDeviceDetails(), 1);
-});
-
-test('iPad viewer recreates its answerer and DEVICE_DETAILS handshake on reconnect', () => {
-	const harness = createViewerHarness();
-
-	connectAndJoin(harness);
-	const { peers } = harness;
-	assert.equal(peers.length, 1);
-	assert.equal(harness.countDeviceDetails(), 1);
-
-	connectAndJoin(harness);
-	assert.equal(peers.length, 2);
-	assert.equal(peers[0].destroyed, true);
-	assert.equal(harness.countDeviceDetails(), 2);
-	assert.equal(harness.socket.disconnectCount, 0);
-	assert.equal(harness.socket.connectCount, 0);
-});
-
-test('iPad viewer recovers once from an unexpected peer close', () => {
-	const harness = createViewerHarness();
-	connectAndJoin(harness);
-
-	const oldPeer = harness.peers[0];
-	oldPeer.emit('close');
-	oldPeer.emit('close');
-
-	assert.equal(oldPeer.destroyed, true);
-	assert.equal(harness.socket.disconnectCount, 1);
-	assert.equal(harness.socket.connectCount, 1);
 	assert.equal(harness.peers.length, 1);
-
-	connectAndJoin(harness);
-	assert.equal(harness.peers.length, 2);
-	assert.equal(harness.countDeviceDetails(), 2);
+	assert.equal(firstPeer.destroyed, false);
+	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 0);
 });
 
-test('iPad viewer completes one replacement answer after peer-close recovery', () => {
+test('unexpected peer close reconnects once and creates one fresh answerer', () => {
 	const harness = createViewerHarness();
-	connectAndJoin(harness);
-
-	harness.peers[0].emit('close');
-	connectAndJoin(harness);
-	const replacementPeer = harness.peers[1];
-
-	harness.socketHandlers.get('MESSAGE')({
-		type: 'CALL_USER',
-		payload: { signalData: 'replacement-offer' },
-	});
-	harness.socketHandlers.get('MESSAGE')({
-		type: 'CALL_USER',
-		payload: { signalData: 'replacement-candidate' },
-	});
-
-	assert.deepEqual(replacementPeer.receivedSignals, [
-		'replacement-offer',
-		'replacement-candidate',
-	]);
-	assert.equal(harness.countCallAccepted(), 1);
-	assert.equal(harness.peers.length, 2);
-	assert.equal(harness.socket.disconnectCount, 1);
-	assert.equal(harness.socket.connectCount, 1);
-});
-
-test('iPad viewer recovers once from an unexpected peer error', () => {
-	const harness = createViewerHarness();
-	connectAndJoin(harness);
-
+	connectAndAuthorize(harness);
 	const oldPeer = harness.peers[0];
-	oldPeer.emit('error', new Error('transport failed'));
-	oldPeer.emit('close');
 
+	oldPeer.emit('close');
+	oldPeer.emit('close');
 	assert.equal(oldPeer.destroyed, true);
 	assert.equal(harness.socket.disconnectCount, 1);
 	assert.equal(harness.socket.connectCount, 1);
 
-	connectAndJoin(harness);
+	harness.socket.id = 'viewer-b';
+	connectAndAuthorize(
+		harness,
+		lifecycle({ generation: 2, viewerSocketId: 'viewer-b' }),
+	);
 	assert.equal(harness.peers.length, 2);
-	assert.equal(harness.countDeviceDetails(), 2);
+	assert.equal(harness.count('IPAD_DEVICE_DETAILS'), 2);
+});
+
+test('generation-bound CALL_USER emits one direct CALL_ACCEPTED', () => {
+	const harness = createViewerHarness();
+	connectAndAuthorize(harness, lifecycle({ phase: 'negotiating' }));
+
+	harness.socketHandlers.get('IPAD_SIGNAL')({
+		type: 'CALL_USER',
+		payload: { signalData: 'offer' },
+		generation: 1,
+		sessionId: 'session-1',
+	});
+	harness.socketHandlers.get('IPAD_SIGNAL')({
+		type: 'CALL_USER',
+		payload: { signalData: 'late-offer' },
+		generation: 0,
+		sessionId: 'session-0',
+	});
+
+	assert.deepEqual(harness.peers[0].receivedSignals, ['offer']);
+	assert.equal(harness.count('IPAD_SIGNAL'), 1);
+});
+
+test('a different active viewer rejection does not retry until a new generation exists', () => {
+	const harness = createViewerHarness();
+	connectAndAuthorize(
+		harness,
+		lifecycle({ viewerSocketId: 'other-viewer', phase: 'streaming' }),
+	);
+	const registrations = harness.count('IPAD_REGISTER_VIEWER');
+	harness.socketHandlers.get('IPAD_REJECTED')({
+		reason: 'different-viewer-active',
+	});
+	harness.socketHandlers.get('IPAD_LIFECYCLE')(
+		lifecycle({ viewerSocketId: 'other-viewer', phase: 'streaming' }),
+	);
+	assert.equal(harness.count('IPAD_REGISTER_VIEWER'), registrations);
+
+	harness.socketHandlers.get('IPAD_LIFECYCLE')(
+		lifecycle({ generation: 2, viewerSocketId: null, phase: 'waiting-owner' }),
+	);
+	assert.equal(harness.count('IPAD_REGISTER_VIEWER'), registrations + 1);
 });

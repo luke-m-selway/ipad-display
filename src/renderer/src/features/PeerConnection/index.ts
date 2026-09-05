@@ -61,6 +61,8 @@ export default class PeerConnection {
 	stallDiagnosticsCleanup: (() => void) | null = null;
 	captureTrackEndedCleanup: (() => void) | null = null;
 	isSelfDestroying = false;
+	ipadLifecycleGeneration: number | null = null;
+	ipadLifecycleSessionID: string | null = null;
 
 	constructor(
 		roomID: string,
@@ -283,13 +285,19 @@ export default class PeerConnection {
 		this.partnerDeviceDetails = {} as Device;
 	}
 
-	selfDestroy(): void {
+	selfDestroy(reason = 'helper-requested-reset'): void {
 		if (this.isSelfDestroying) return;
 		this.isSelfDestroying = true;
-		handleSelfDestroy(this);
+		handleSelfDestroy(this, reason);
 	}
 
 	emitUserEnter(): void {
+		if (process.env.IPAD_MODE === '1') {
+			this.socket.emit('IPAD_REGISTER_OWNER', {
+				sessionId: this.sharingSessionID,
+			});
+			return;
+		}
 		this.socket.emit('USER_ENTER', {
 			username: this.user.username,
 		});
@@ -300,9 +308,18 @@ export default class PeerConnection {
 	): Promise<void> {
 		if (!this.socket) return;
 		if (!this.user) return;
+		const msg = await prepareMessage(payload, this.user);
+		if (process.env.IPAD_MODE === '1') {
+			if (
+				this.ipadLifecycleSessionID !== this.sharingSessionID ||
+				this.ipadLifecycleGeneration === null
+			)
+				return;
+			this.socket.emit('IPAD_SIGNAL', msg.toSend);
+			return;
+		}
 		if (!this.partner) return;
 		if (!this.partner.username) return;
-		const msg = await prepareMessage(payload, this.user);
 		this.socket.emit('MESSAGE', msg.toSend);
 	}
 
@@ -344,7 +361,7 @@ export default class PeerConnection {
 			() =>
 				!this.isSelfDestroying &&
 				this.localStream?.getVideoTracks()[0] === track,
-			() => this.selfDestroy(),
+			() => this.selfDestroy('capture-track-ended'),
 		);
 	}
 
@@ -354,6 +371,10 @@ export default class PeerConnection {
 	}
 
 	toggleLockRoom(isConnected: boolean): void {
+		if (process.env.IPAD_MODE === '1') {
+			this.isSocketRoomLocked = isConnected;
+			return;
+		}
 		this.socket.emit('TOGGLE_LOCK_ROOM');
 		this.isSocketRoomLocked = isConnected;
 	}

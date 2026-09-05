@@ -38,17 +38,15 @@
           username: `ipad-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         };
 
-        let partner = null;
         let peer = null;
-        let deviceDetailsSent = false;
         let isStreaming = false;
         let lastFullscreenGestureAt = 0;
-        let hasConnectedBefore = false;
-        let joinAttempt = 0;
         let peerRecoveryInProgress = false;
         let pageIsTearingDown = false;
-        let viewerHasJoinedRoom = false;
-        let waitingForHostReplacement = false;
+        let lifecycle = null;
+        let registeredGeneration = null;
+        let deviceDetailsGeneration = null;
+        let needsFreshPeer = false;
 
         const setStatus = (text, isStreaming = false) => {
           status.textContent = text;
@@ -103,22 +101,9 @@
           forceNew: true,
         });
 
-        const sendMessage = (type, payload) => {
-          if (!partner) return;
-          socket.emit('MESSAGE', {
-            type,
-            payload: { ...payload, sender: user.id, username: user.username },
-          });
-        };
-
         const clearViewerSessionState = () => {
-          partner = null;
-          deviceDetailsSent = false;
-          viewerHasJoinedRoom = false;
-          waitingForHostReplacement = false;
           isStreaming = false;
           video.srcObject = null;
-          joinAttempt += 1;
           updateFullscreenHint();
         };
 
@@ -142,10 +127,14 @@
           peerRecoveryInProgress = true;
           clearViewerSessionState();
           disposePeer();
+          lifecycle = null;
+          deviceDetailsGeneration = null;
+          registeredGeneration = null;
+          needsFreshPeer = true;
           setStatus(`Reconnecting display (${reason})…`);
 
-          // Reconnecting the socket gives Darkwire a new room membership. The
-          // existing connect handler is the only path that creates and joins a peer.
+          // The server transfers authority only after this socket has registered
+          // for a generation. Reusing connect keeps that registration canonical.
           socket.disconnect();
           socket.connect();
         };
@@ -155,8 +144,11 @@
           peer = nextPeer;
 
           nextPeer.on('signal', (signalData) => {
-            if (peer !== nextPeer) return;
-            sendMessage('CALL_ACCEPTED', { signalData });
+            if (!lifecycle || peer !== nextPeer) return;
+            socket.emit('IPAD_SIGNAL', {
+              type: 'CALL_ACCEPTED',
+              payload: { signalData },
+            });
           });
 
           nextPeer.on('stream', (stream) => {
@@ -181,17 +173,23 @@
           });
         };
 
-        const resetForSignalingReconnect = () => {
+        const resetForPeerRecovery = () => {
           clearViewerSessionState();
           disposePeer();
           createPeer();
         };
 
         const sendDeviceDetailsWhenReady = () => {
-          if (!viewerHasJoinedRoom || !partner || deviceDetailsSent) return;
+          if (
+            !lifecycle ||
+            lifecycle.viewer?.socketId !== socket.id ||
+            !lifecycle.ownerSocketId ||
+            lifecycle.phase !== 'waiting-viewer' ||
+            deviceDetailsGeneration === lifecycle.generation
+          ) return;
 
-          deviceDetailsSent = true;
-          sendMessage('DEVICE_DETAILS', {
+          deviceDetailsGeneration = lifecycle.generation;
+          socket.emit('IPAD_DEVICE_DETAILS', {
             os: 'iPadOS',
             deviceType: 'tablet',
             browser: navigator.userAgent,
@@ -202,56 +200,48 @@
           setStatus('Waiting for host…');
         };
 
-        const requestRoomJoin = () => {
-          const currentJoinAttempt = ++joinAttempt;
-          socket.emit('GET_MY_IP', () => {
-            if (!socket.connected || currentJoinAttempt !== joinAttempt) return;
-            socket.emit('USER_ENTER', { username: user.username, ip: '' });
-          });
+        const registerForCurrentGeneration = () => {
+          if (!socket.connected) return;
+          const generation = lifecycle?.generation ?? -1;
+          if (registeredGeneration === generation) return;
+          registeredGeneration = generation;
+          socket.emit('IPAD_REGISTER_VIEWER', { logicalViewerId: user.id });
         };
 
         createPeer();
 
         socket.on('connect', () => {
-          if (hasConnectedBefore) {
-            // A resumed Safari document needs a new answerer for the host's replacement offer.
-            resetForSignalingReconnect();
-          } else {
-            hasConnectedBefore = true;
+		  registeredGeneration = null;
+          if (needsFreshPeer) {
+            resetForPeerRecovery();
+            needsFreshPeer = false;
           }
           setStatus('Joining display…');
-          // Darkwire installs its room handlers shortly after Socket.IO connects.
-          // Match the stock viewer's GET_MY_IP -> USER_ENTER ordering.
-          const currentJoinAttempt = ++joinAttempt;
-          window.setTimeout(() => {
-            if (!socket.connected || currentJoinAttempt !== joinAttempt) return;
-            requestRoomJoin();
-          }, 500);
+          // Registration is idempotent. It is the only viewer authority request.
+		  registerForCurrentGeneration();
         });
 
-        socket.on('USER_ENTER', ({ users }) => {
-          viewerHasJoinedRoom = users.some(
-            (candidate) => candidate.username === user.username,
-          );
-          const host = users.find((candidate) => candidate.username !== user.username);
-          if (waitingForHostReplacement && !viewerHasJoinedRoom && host) {
-            // A socket that arrived during old-session teardown stays in the
-            // Socket.IO room. The replacement owner snapshot is its explicit
-            // permission to issue the canonical USER_ENTER again.
-            requestRoomJoin();
+        socket.on('IPAD_LIFECYCLE', (nextLifecycle) => {
+          lifecycle = nextLifecycle;
+          if (
+            lifecycle.sessionId &&
+            lifecycle.phase !== 'resetting' &&
+            lifecycle.viewer?.socketId !== socket.id
+          ) {
+            registerForCurrentGeneration();
             return;
           }
-          if (!host) return;
-
-          partner = host;
-          if (viewerHasJoinedRoom) waitingForHostReplacement = false;
-          // The host must not start an offer until this socket has joined the
-          // room; recovery can otherwise observe the owner before itself.
           sendDeviceDetailsWhenReady();
         });
 
-        socket.on('MESSAGE', (message) => {
-          if (!message || !message.type) return;
+        socket.on('IPAD_SIGNAL', (message) => {
+          if (
+            !message ||
+            !message.type ||
+            !lifecycle ||
+            message.generation !== lifecycle.generation ||
+            message.sessionId !== lifecycle.sessionId
+          ) return;
           if (message.type === 'CALL_USER') {
             peer?.signal(message.payload.signalData);
           } else if (message.type === 'ALLOWED_TO_CONNECT') {
@@ -261,13 +251,15 @@
           }
         });
 
-        socket.on('NOT_ALLOWED', () => setStatus('Display unavailable'));
-        socket.on('ROOM_LOCKED', () => {
-          waitingForHostReplacement = true;
-          setStatus('Waiting for host…');
+        socket.on('IPAD_REJECTED', ({ reason }) => {
+          if (reason === 'different-viewer-active') {
+            setStatus('Display unavailable');
+          } else {
+            setStatus('Waiting for host…');
+          }
         });
+        socket.on('IPAD_SUPERSEDED', () => setStatus('Session replaced'));
         socket.on('disconnect', () => {
-          joinAttempt += 1;
           setStatus('Disconnected');
         });
 

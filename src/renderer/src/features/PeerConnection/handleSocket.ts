@@ -1,7 +1,12 @@
+import handleIpadSocket from './handleIpadSocket';
 import handleSocketUserEnter from './handleSocketUserEnter';
 import handleSocketUserExit from './handleSocketUserExit';
 
 export default function handleSocket(peerConnection: PeerConnection): void {
+	if (process.env.IPAD_MODE === '1') {
+		handleIpadSocket(peerConnection);
+		return;
+	}
 	peerConnection.socket.removeAllListeners();
 
 	peerConnection.socket.on('disconnect', () => {

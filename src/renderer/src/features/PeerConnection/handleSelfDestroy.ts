@@ -4,6 +4,7 @@ import NullUser from './NullUser';
 
 export default function handleSelfDestroy(
 	peerConnection: PeerConnection,
+	reason: string,
 ): void {
 	peerConnection.stopStallDiagnostics();
 	peerConnection.stopCaptureTrackEndedRecovery();
@@ -42,14 +43,17 @@ export default function handleSelfDestroy(
 		peerConnection.localStream = null;
 	}
 
-	// cleanup socket
-	peerConnection.socket.removeAllListeners();
-	peerConnection.socket.disconnect();
-
 	window.electron.ipcRenderer.invoke(
 		IpcEvents.DestroySharingSessionById,
-		peerConnection.sharingSessionID,
+		process.env.IPAD_MODE === '1'
+			? { sessionID: peerConnection.sharingSessionID, reason }
+			: peerConnection.sharingSessionID,
 	);
+
+	// Notify main before closing the socket so the reset reason remains the
+	// failure boundary, rather than whichever transport event happens first.
+	peerConnection.socket.removeAllListeners();
+	peerConnection.socket.disconnect();
 	peerConnection.onDeviceConnectedCallback = () => {
 		// reset callback after destruction
 	};

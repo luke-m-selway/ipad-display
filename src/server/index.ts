@@ -23,6 +23,8 @@ import getStore from './store';
 import { getDeskreenGlobal } from '../main/helpers/getDeskreenGlobal';
 import getMyLocalIpV4 from '../main/helpers/getMyLocalIpV4';
 import { getClientViewerDistPath, getIpadViewerDistPath } from './getClientViewerDistPath';
+import { setIpadLifecycleStateListener } from '../ipad-host/lifecycleRuntime';
+import IpadSocket from './ipadSocket';
 
 const { hostname, primaryPort, backupPort } = config;
 
@@ -48,6 +50,10 @@ const ioHandleOnConnection = (socket): void => {
 			return;
 		}
 		const roomIdHash = getRoomIdHash(roomId);
+		if (isIpadMode) {
+			new IpadSocket(socket, roomIdHash);
+			return;
+		}
 
 		const storedRoom = await store.get('rooms', roomIdHash);
 		const parsedRoom =
@@ -62,8 +68,7 @@ const ioHandleOnConnection = (socket): void => {
 	};
 
 	if (isIpadMode) {
-		// The private host helper follows Deskreen's immediate USER_ENTER contract.
-		// Its room handler must exist before Socket.IO confirms the connection.
+		// The private host helper follows Deskreen's immediate registration contract.
 		void installRoomHandlers();
 		return;
 	}
@@ -112,7 +117,7 @@ class DeskreenSignalingServer {
 		this.backupPort = parseInt(backupPort as unknown as string, 10);
 
 		this.port = isIpadMode ? IPAD_PORT : this.primaryPort;
-		
+
 		// Use iPad viewer in iPad mode, otherwise use standard client viewer
 		if (isIpadMode) {
 			this.clientDistDirectory = getIpadViewerDistPath();
@@ -185,6 +190,12 @@ class DeskreenSignalingServer {
 		});
 
 		socketIOServerStore.setServer(io);
+		if (isIpadMode) {
+			const ipadRoomHash = getRoomIdHash('ipad-main');
+			setIpadLifecycleStateListener((state) => {
+				io.to(ipadRoomHash).emit('IPAD_LIFECYCLE', state);
+			});
+		}
 	}
 
 	async start(): Promise<http.Server> {
@@ -232,7 +243,7 @@ class DeskreenSignalingServer {
 							reject(new Error(`Port ${port} is already in use - iPad mode requires this exact port`));
 							return;
 						}
-						
+
 						// Normal mode: try backup port
 						this.log.error(`Port ${port} is already in use`);
 						this.log.warn(
@@ -281,11 +292,11 @@ class DeskreenSignalingServer {
 
 			// In iPad mode, bind to the specific IP; otherwise bind to all interfaces
 			const bindHost = isIpadMode ? IPAD_BIND_IP : '0.0.0.0';
-			
+
 			if (isIpadMode) {
 				this.log.info(`iPad mode: binding to fixed address ${bindHost}:${this.port}`);
 			}
-			
+
 			// Start with the primary port
 			tryListen(this.port, bindHost);
 		});

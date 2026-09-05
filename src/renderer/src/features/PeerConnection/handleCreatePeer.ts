@@ -79,12 +79,12 @@ export default function handleCreatePeer(
 
 				// ensure cleanup on peer end/error to prevent dangling helper window
 				peerConnection.peer.on('close', () => {
-					peerConnection.selfDestroy();
+					peerConnection.selfDestroy('sender-peer-close');
 				});
 
 				peerConnection.peer.on('error', (e: Error) => {
 					console.error('peerConnection peer error', e);
-					peerConnection.selfDestroy();
+					peerConnection.selfDestroy('sender-peer-error');
 				});
 				const captureTrack = peerConnection.localStream?.getVideoTracks()[0];
 				if (captureTrack) {
