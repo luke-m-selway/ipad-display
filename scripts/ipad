@@ -377,8 +377,9 @@ case "${1:-start}" in
     esac
     ;;
   status) status_stack ;;
+  doctor) exec "$REPO_DIR/scripts/ipad-doctor" ;;
   *)
-    echo "Usage: ipad [start|stop|status] | ipad touch [stop]"
+    echo "Usage: ipad [start|stop|status|doctor] | ipad touch [stop]"
     exit 1
     ;;
 esac
