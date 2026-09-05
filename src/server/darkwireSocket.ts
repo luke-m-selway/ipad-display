@@ -6,6 +6,7 @@
 /* eslint-disable no-async-promise-executor */
 import _ from 'lodash';
 import Io from 'socket.io';
+import { claimCurrentRoomDisconnect } from './disconnectOwnership';
 import socketsIPService from './socketsIPService';
 import getStore from './store';
 import socketIOServerStore from './store/socketIOServerStore';
@@ -13,6 +14,8 @@ import socketIOServerStore from './store/socketIOServerStore';
 const LOCALHOST_SOCKET_IP = '127.0.0.1';
 const IPAD_HOST_SOCKET_IP = '192.168.2.1';
 const isIpadMode = process.env.IPAD_MODE === '1';
+const isIpadStallDiagnosticsEnabled =
+	isIpadMode && process.env.IPAD_STALL_DIAGNOSTICS === '1';
 
 interface SocketOPTS {
 	roomId: string;
@@ -225,9 +228,21 @@ export default class Socket implements SocketOPTS {
 
 	async handleDisconnect(socket: Io.Socket): Promise<void> {
 		const room: Room = (await this.fetchRoom()) as Room;
-		const isOwnerUser = !!(room.users || []).find(
-			(u) => u.socketId === socket.id && u.isOwner,
-		);
+		const ownership = claimCurrentRoomDisconnect(socket, room.users || []);
+		if (ownership.kind !== 'active') {
+			if (isIpadStallDiagnosticsEnabled) {
+				console.log(
+					`[iPad Signaling] Ignored ${ownership.kind} disconnect socket=${socket.id} room=${this.roomIdOriginal}`,
+				);
+			}
+			return;
+		}
+		const { member } = ownership;
+		if (isIpadStallDiagnosticsEnabled) {
+			console.log(
+				`[iPad Signaling] Active ${member.isOwner ? 'owner' : 'viewer'} disconnect socket=${socket.id} username=${member.username} room=${this.roomIdOriginal}`,
+			);
+		}
 
 		const newRoom = {
 			...room,
@@ -239,7 +254,7 @@ export default class Socket implements SocketOPTS {
 				})),
 		};
 
-		if (isOwnerUser) {
+		if (member.isOwner) {
 			this.disconnectAllUsers(newRoom);
 			await this.destroyRoom();
 		} else {

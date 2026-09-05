@@ -38,6 +38,8 @@ let virtualDisplay: VirtualDisplaySource | null = null;
 let sharingSession: SharingSession | null = null;
 let restartInProgress = false;
 let isQuitting = false;
+const isIpadStallDiagnosticsEnabled =
+	process.env.IPAD_STALL_DIAGNOSTICS === '1';
 
 const hostUser: LocalPeerUser = {
 	username: 'iPad-Host',
@@ -183,8 +185,15 @@ function createSharingSession(source: VirtualDisplaySource): SharingSession {
 }
 
 async function restartSharingSession(sessionID: string): Promise<void> {
-	if (isQuitting || restartInProgress || sharingSession?.id !== sessionID)
+	if (isQuitting || restartInProgress) return;
+	if (sharingSession?.id !== sessionID) {
+		if (isIpadStallDiagnosticsEnabled) {
+			console.log(
+				`[iPad Host] Ignored stale reset request session=${sessionID} active=${sharingSession?.id ?? 'none'}`,
+			);
+		}
 		return;
+	}
 	restartInProgress = true;
 	try {
 		const previousSession = sharingSession;
@@ -196,6 +205,11 @@ async function restartSharingSession(sessionID: string): Promise<void> {
 		if (!virtualDisplay) throw new Error('Virtual display source was lost');
 		sharingSession = createSharingSession(virtualDisplay);
 		console.log('[iPad Host] Reset session after viewer disconnect');
+		if (isIpadStallDiagnosticsEnabled) {
+			console.log(
+				`[iPad Host] Session reset previous=${sessionID} replacement=${sharingSession.id}`,
+			);
+		}
 	} finally {
 		restartInProgress = false;
 	}

@@ -28,6 +28,7 @@ type SimplePeerWithRTCPeerConnection = {
 
 export interface PartnerPeerUser {
 	username: string;
+	socketId?: string;
 }
 
 export default class PeerConnection {

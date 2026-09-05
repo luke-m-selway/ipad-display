@@ -24,9 +24,12 @@ export default function handleSocket(peerConnection: PeerConnection): void {
 		},
 	);
 
-	peerConnection.socket.on('USER_EXIT', () => {
-		handleSocketUserExit(peerConnection);
-	});
+	peerConnection.socket.on(
+		'USER_EXIT',
+		(payload: { users: PartnerPeerUser[] }) => {
+			handleSocketUserExit(peerConnection, payload);
+		},
+	);
 
 	peerConnection.socket.on(
 		'MESSAGE',
