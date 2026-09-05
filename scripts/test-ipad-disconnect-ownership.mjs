@@ -20,6 +20,7 @@ const { claimCurrentRoomDisconnect } = loadTypeScriptModule(
 const { default: handleSocketUserExit } = loadTypeScriptModule(
 	'src/renderer/src/features/PeerConnection/handleSocketUserExit.ts',
 );
+const darkwireSocket = readFileSync('src/server/darkwireSocket.ts', 'utf8');
 
 const owner = {
 	socketId: 'owner-socket',
@@ -40,6 +41,17 @@ const viewerB = {
 function socket(id) {
 	return { id, data: {} };
 }
+
+test('locked rooms keep their signaling handlers until a replacement owner appears', () => {
+	assert.match(
+		darkwireSocket,
+		/if \(room\.isLocked\) \{\s*this\.sendRoomLocked\(\);\s*\}\s*\s*this\.init\(\);/,
+	);
+	assert.match(
+		darkwireSocket,
+		/room\.isLocked && !isHostOwnerSocket\(this\.socket\)[\s\S]*this\.sendRoomLocked\(\);[\s\S]*return;/,
+	);
+});
 
 test('active viewer disconnect claims exactly one reset-producing event', () => {
 	const activeViewerSocket = socket(viewerA.socketId);

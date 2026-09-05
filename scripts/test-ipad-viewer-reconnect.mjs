@@ -179,6 +179,22 @@ test('iPad viewer waits for its room membership before sending DEVICE_DETAILS', 
 	assert.equal(harness.countDeviceDetails(), 1);
 });
 
+test('iPad viewer joins after a locked old room announces the replacement host', () => {
+	const harness = createViewerHarness();
+
+	harness.socketHandlers.get('connect')();
+	harness.flushJoinAttempt();
+	harness.socketHandlers.get('ROOM_LOCKED')();
+	harness.socketHandlers.get('USER_ENTER')({ users: [host] });
+
+	assert.equal(harness.countDeviceDetails(), 0);
+	const replacementJoin = harness.getLatestUserEnter();
+	harness.socketHandlers.get('USER_ENTER')({
+		users: [host, replacementJoin],
+	});
+	assert.equal(harness.countDeviceDetails(), 1);
+});
+
 test('iPad viewer recreates its answerer and DEVICE_DETAILS handshake on reconnect', () => {
 	const harness = createViewerHarness();
 

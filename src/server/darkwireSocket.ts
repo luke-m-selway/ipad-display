@@ -55,7 +55,6 @@ export default class Socket implements SocketOPTS {
 		this.room = room;
 		if (room.isLocked) {
 			this.sendRoomLocked();
-			return;
 		}
 
 		this.init();
@@ -151,6 +150,9 @@ export default class Socket implements SocketOPTS {
 					isLocked: false,
 					createdAt: Date.now(),
 				};
+			} else if (room.isLocked && !isHostOwnerSocket(this.socket)) {
+				this.sendRoomLocked();
+				return;
 			} else {
 				const userFound = room.users.find(
 					(r) => r.username === payload.username,
