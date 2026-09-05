@@ -4,12 +4,16 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const script = readFileSync('scripts/ipad', 'utf8');
+const installScript = readFileSync('scripts/install', 'utf8');
+const doctorScript = readFileSync('scripts/ipad-doctor', 'utf8');
 const readme = readFileSync('README.md', 'utf8');
 
-test('scripts/ipad is valid bash', () => {
-	assert.doesNotThrow(() => {
-		execFileSync('bash', ['-n', 'scripts/ipad']);
-	});
+test('iPad shell entrypoints are valid bash', () => {
+	for (const path of ['scripts/ipad', 'scripts/install', 'scripts/ipad-doctor']) {
+		assert.doesNotThrow(() => {
+			execFileSync('bash', ['-n', path]);
+		});
+	}
 });
 
 test('plain `ipad` starts and stops only display mode', () => {
@@ -77,6 +81,18 @@ test('stopping the stack always clears the mode record', () => {
 	assert.match(script, /stop_stack\(\) \{[\s\S]*?rm -f "\$MODE_FILE"/);
 });
 
+test('doctor is exposed without becoming a lifecycle operation', () => {
+	assert.match(script, /doctor\) exec "\$REPO_DIR\/scripts\/ipad-doctor" ;;/);
+	assert.doesNotMatch(doctorScript, /clear_stale_record|stop_stack|terminate_owned_process|rm -f "\$MODE_FILE"/);
+});
+
+test('installer pins and checksum-verifies the Intel Node runtime', () => {
+	assert.match(installScript, /NODE_VERSION="v23\.11\.1"/);
+	assert.match(installScript, /SHASUMS256\.txt/);
+	assert.match(installScript, /shasum -a 256/);
+	assert.match(installScript, /node-\$\{NODE_VERSION\}-darwin-x64/);
+});
+
 test('README command reference matches the unified script contract', () => {
 	for (const command of [
 		'ipad',
@@ -84,6 +100,7 @@ test('README command reference matches the unified script contract', () => {
 		'ipad touch',
 		'ipad touch stop',
 		'ipad status',
+		'ipad doctor',
 	]) {
 		assert.match(readme, new RegExp(`\\\`${command}\\\``));
 	}
