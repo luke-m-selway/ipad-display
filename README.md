@@ -5,25 +5,30 @@ supported Intel Mac running macOS Ventura. It uses a fixed USB/private-network
 link and a dedicated virtual display; it is not a general-purpose remote-desktop
 or cross-platform screen-sharing product.
 
+The validated host is a 2017 Intel MacBook Pro running macOS Ventura. Other Intel
+Ventura Macs are not yet qualified.
+
 ## Quick start
 
 Clone the repository on the Mac, then run:
 
 ```bash
 ./scripts/install
-ipad doctor
+./scripts/ipad doctor
 ```
 
 The installer provisions the validated Intel Node runtime locally, installs npm
 dependencies, builds the host/viewer, prebuilds the touch helper, and installs a
-global `ipad` wrapper where possible. It does not grant macOS privacy
-permissions automatically.
+global `ipad` wrapper where possible. If its user-local wrapper directory is not
+already on `PATH`, it prints the one line needed to add it. It does not grant
+macOS privacy permissions automatically.
 
 Connect and trust the iPad over USB. In **System Settings → General → Sharing →
 Internet Sharing**, share the Mac's **Wi-Fi** connection to **iPad USB** and turn
 Internet Sharing on. The Mac side must expose `192.168.2.1`.
 
-Start either mode:
+Start either mode with the global command once it resolves on `PATH`; the
+repository script is always available as `./scripts/ipad`:
 
 ```bash
 ipad
@@ -72,8 +77,9 @@ turn the video into a media-control surface.
 
 ## Supported setup and boundary
 
-- Intel macOS Ventura Mac with Screen Recording permission.
-- iPad on the dedicated USB/private network exposing `192.168.2.1` on the Mac.
+- 2017 Intel MacBook Pro on macOS Ventura is the validated host.
+- Screen Recording permission is required for display capture.
+- iPad uses the dedicated USB/private network exposing `192.168.2.1` on the Mac.
 - iPad Safari or a Home Screen standalone viewer.
 - Touch mode additionally requires Accessibility permission for the local input
   helper.
