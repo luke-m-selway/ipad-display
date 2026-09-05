@@ -93,6 +93,11 @@ test('installer pins and checksum-verifies the Intel Node runtime', () => {
 	assert.match(installScript, /node-\$\{NODE_VERSION\}-darwin-x64/);
 });
 
+test('installer isolates npm cache from ambient user npm state', () => {
+	assert.match(installScript, /NPM_CACHE="\$INSTALL_ROOT\/npm-cache"/);
+	assert.match(installScript, /export npm_config_cache="\$NPM_CACHE"/);
+});
+
 test('README command reference matches the unified script contract', () => {
 	for (const command of [
 		'ipad',
