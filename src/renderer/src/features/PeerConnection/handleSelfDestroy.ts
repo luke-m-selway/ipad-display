@@ -6,8 +6,10 @@ export default function handleSelfDestroy(
 	peerConnection: PeerConnection,
 	reason: string,
 ): void {
-	peerConnection.stopStallDiagnostics();
-	peerConnection.stopCaptureTrackEndedRecovery();
+	if (peerConnection.isIpadMode) {
+		peerConnection.stopStallDiagnostics();
+		peerConnection.stopCaptureTrackEndedRecovery();
+	}
 	peerConnection.partner = NullUser;
 	window.electron.ipcRenderer.invoke(
 		IpcEvents.DisconnectDeviceById,
@@ -43,6 +45,11 @@ export default function handleSelfDestroy(
 		peerConnection.localStream = null;
 	}
 
+	if (!peerConnection.isIpadMode) {
+		peerConnection.socket.removeAllListeners();
+		peerConnection.socket.disconnect();
+	}
+
 	window.electron.ipcRenderer.invoke(
 		IpcEvents.DestroySharingSessionById,
 		peerConnection.isIpadMode
@@ -50,10 +57,12 @@ export default function handleSelfDestroy(
 			: peerConnection.sharingSessionID,
 	);
 
-	// Notify main before closing the socket so the reset reason remains the
-	// failure boundary, rather than whichever transport event happens first.
-	peerConnection.socket.removeAllListeners();
-	peerConnection.socket.disconnect();
+	if (peerConnection.isIpadMode) {
+		// Preserve the reset reason before the owner socket's disconnect can
+		// independently request the same generation transition.
+		peerConnection.socket.removeAllListeners();
+		peerConnection.socket.disconnect();
+	}
 	peerConnection.onDeviceConnectedCallback = () => {
 		// reset callback after destruction
 	};

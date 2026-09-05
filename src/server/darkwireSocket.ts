@@ -6,7 +6,6 @@
 /* eslint-disable no-async-promise-executor */
 import _ from 'lodash';
 import Io from 'socket.io';
-import { claimCurrentRoomDisconnect } from './disconnectOwnership';
 import socketsIPService from './socketsIPService';
 import getStore from './store';
 import socketIOServerStore from './store/socketIOServerStore';
@@ -14,8 +13,6 @@ import socketIOServerStore from './store/socketIOServerStore';
 const LOCALHOST_SOCKET_IP = '127.0.0.1';
 const IPAD_HOST_SOCKET_IP = '192.168.2.1';
 const isIpadMode = process.env.IPAD_MODE === '1';
-const isIpadStallDiagnosticsEnabled =
-	isIpadMode && process.env.IPAD_STALL_DIAGNOSTICS === '1';
 
 interface SocketOPTS {
 	roomId: string;
@@ -55,6 +52,7 @@ export default class Socket implements SocketOPTS {
 		this.room = room;
 		if (room.isLocked) {
 			this.sendRoomLocked();
+			return;
 		}
 
 		this.init();
@@ -150,9 +148,6 @@ export default class Socket implements SocketOPTS {
 					isLocked: false,
 					createdAt: Date.now(),
 				};
-			} else if (room.isLocked && !isHostOwnerSocket(this.socket)) {
-				this.sendRoomLocked();
-				return;
 			} else {
 				const userFound = room.users.find(
 					(r) => r.username === payload.username,
@@ -230,21 +225,9 @@ export default class Socket implements SocketOPTS {
 
 	async handleDisconnect(socket: Io.Socket): Promise<void> {
 		const room: Room = (await this.fetchRoom()) as Room;
-		const ownership = claimCurrentRoomDisconnect(socket, room.users || []);
-		if (ownership.kind !== 'active') {
-			if (isIpadStallDiagnosticsEnabled) {
-				console.log(
-					`[iPad Signaling] Ignored ${ownership.kind} disconnect socket=${socket.id} room=${this.roomIdOriginal}`,
-				);
-			}
-			return;
-		}
-		const { member } = ownership;
-		if (isIpadStallDiagnosticsEnabled) {
-			console.log(
-				`[iPad Signaling] Active ${member.isOwner ? 'owner' : 'viewer'} disconnect socket=${socket.id} username=${member.username} room=${this.roomIdOriginal}`,
-			);
-		}
+		const isOwnerUser = !!(room.users || []).find(
+			(u) => u.socketId === socket.id && u.isOwner,
+		);
 
 		const newRoom = {
 			...room,
@@ -256,7 +239,7 @@ export default class Socket implements SocketOPTS {
 				})),
 		};
 
-		if (member.isOwner) {
+		if (isOwnerUser) {
 			this.disconnectAllUsers(newRoom);
 			await this.destroyRoom();
 		} else {

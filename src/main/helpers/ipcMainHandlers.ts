@@ -137,6 +137,7 @@ export const initIpcMainHandlers = (mainWindow: BrowserWindow): void => {
 	});
 
 	ipcMain.handle(IpcEvents.GetSignalingHost, () => 'http://127.0.0.1');
+	ipcMain.handle(IpcEvents.GetIpadMode, () => false);
 
 	ipcMain.handle(IpcEvents.GetAppPath, () => {
 		const deskreenGlobal = getDeskreenGlobal();

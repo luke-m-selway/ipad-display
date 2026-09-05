@@ -14,7 +14,6 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:client-viewer && npm run typecheck:node && npm run typecheck:web",
-    "test:ipad-viewer-reconnect": "node --test scripts/test-ipad-viewer-reconnect.mjs",
     "start": "electron-vite preview",
     "dev": "concurrently \"electron-vite dev\" \"npm run devClientViewer\"",
     "devClientViewer": "cd src/client-viewer && npm run dev -- --host --port=5174",

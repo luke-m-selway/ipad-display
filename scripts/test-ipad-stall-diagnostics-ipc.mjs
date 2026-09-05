@@ -8,6 +8,10 @@ const diagnostics = readFileSync(
 	'src/renderer/src/features/PeerConnection/ipadStallDiagnostics.ts',
 	'utf8',
 );
+const createPeer = readFileSync(
+	'src/renderer/src/features/PeerConnection/handleCreatePeer.ts',
+	'utf8',
+);
 
 test('iPad stall diagnostics use main-process IPC for activation and logging', () => {
 	assert.match(
@@ -36,4 +40,8 @@ test('iPad stall diagnostics use main-process IPC for activation and logging', (
 	);
 	assert.doesNotMatch(diagnostics, /globalThis\.process|process\.env/);
 	assert.match(diagnostics, /const STATS_INTERVAL_MS = 5000/);
+	assert.match(
+		createPeer,
+		/if \(peerConnection\.isIpadMode\) \{[\s\S]*startIpadStallDiagnostics/,
+	);
 });

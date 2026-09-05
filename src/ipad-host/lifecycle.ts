@@ -54,13 +54,8 @@ const initialState = (): IpadLifecycleState => ({
 	resetReason: null,
 });
 
-function phaseForBindings(
-	ownerSocketId: string | null,
-	viewer: IpadViewerBinding | null,
-): IpadLifecyclePhase {
-	if (!ownerSocketId) return 'waiting-owner';
-	if (!viewer) return 'waiting-viewer';
-	return 'waiting-viewer';
+function phaseForOwner(ownerSocketId: string | null): IpadLifecyclePhase {
+	return ownerSocketId ? 'waiting-viewer' : 'waiting-owner';
 }
 
 /**
@@ -103,10 +98,7 @@ export class IpadLifecycleCoordinator {
 		}
 
 		this.state.ownerSocketId = socketId;
-		this.state.phase = phaseForBindings(
-			this.state.ownerSocketId,
-			this.state.viewer,
-		);
+		this.state.phase = phaseForOwner(this.state.ownerSocketId);
 		return this.accepted();
 	}
 
@@ -121,10 +113,7 @@ export class IpadLifecycleCoordinator {
 		const currentViewer = this.state.viewer;
 		if (!currentViewer) {
 			this.state.viewer = { logicalViewerId, documentId, socketId };
-			this.state.phase = phaseForBindings(
-				this.state.ownerSocketId,
-				this.state.viewer,
-			);
+			this.state.phase = phaseForOwner(this.state.ownerSocketId);
 			return this.accepted();
 		}
 		if (currentViewer.logicalViewerId !== logicalViewerId) {

@@ -356,6 +356,7 @@ export default class PeerConnection {
 	}
 
 	watchIpadCaptureTrackEnded(track: MediaStreamTrack): void {
+		if (!this.isIpadMode) return;
 		this.stopCaptureTrackEndedRecovery();
 		if (!this.sourceCaptureSize) return;
 
@@ -374,10 +375,6 @@ export default class PeerConnection {
 	}
 
 	toggleLockRoom(isConnected: boolean): void {
-		if (this.isIpadMode) {
-			this.isSocketRoomLocked = isConnected;
-			return;
-		}
 		this.socket.emit('TOGGLE_LOCK_ROOM');
 		this.isSocketRoomLocked = isConnected;
 	}

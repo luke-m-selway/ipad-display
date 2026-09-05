@@ -249,8 +249,13 @@ test('helper socket startup uses the main-process iPad mode value', () => {
 		'src/renderer/src/peerConnectionHelperRendererWindowIndex.tsx',
 		'utf8',
 	);
+	const genericIpcHandlers = readFileSync(
+		'src/main/helpers/ipcMainHandlers.ts',
+		'utf8',
+	);
 	assert.match(helperBootstrap, /IpcEvents\.GetIpadMode/);
 	assert.match(helperBootstrap, /isIpadMode === true/);
+	assert.match(genericIpcHandlers, /IpcEvents\.GetIpadMode, \(\) => false/);
 
 	const { default: handleIpadSocket } = loadTypeScriptModule(
 		'src/renderer/src/features/PeerConnection/handleIpadSocket.ts',
