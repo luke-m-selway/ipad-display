@@ -1,5 +1,6 @@
 import type Io from 'socket.io';
 import {
+	acceptIpadInput,
 	disconnectIpadSocket,
 	getIpadLifecycleState,
 	getIpadSignalTarget,
@@ -8,7 +9,9 @@ import {
 	registerIpadViewer,
 	requestIpadNegotiation,
 	requestIpadReset,
+	isIpadTouchEnabled,
 } from '../ipad-host/lifecycleRuntime';
+import type { IpadInput } from '../ipad-host/lifecycleRuntime';
 import socketsIPService from './socketsIPService';
 import socketIOServerStore from './store/socketIOServerStore';
 
@@ -19,6 +22,71 @@ type IpadSignal = {
 	type: string;
 	payload: Record<string, unknown>;
 };
+
+type IpadInputPayload = IpadInput & {
+	generation: number;
+	sessionId: string;
+};
+
+function isFiniteUnit(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function parseIpadInput(payload: unknown): IpadInputPayload | null {
+	if (!payload || typeof payload !== 'object') return null;
+	const candidate = payload as Record<string, unknown>;
+	const action = candidate.action;
+	if (
+		action !== 'click' &&
+		action !== 'down' &&
+		action !== 'up' &&
+		action !== 'drag' &&
+		action !== 'scroll' &&
+		action !== 'move' &&
+		action !== 'mission_control' &&
+		action !== 'space_left' &&
+		action !== 'space_right'
+	)
+		return null;
+	if (
+		!isFiniteUnit(candidate.x) ||
+		!isFiniteUnit(candidate.y) ||
+		typeof candidate.generation !== 'number' ||
+		!Number.isInteger(candidate.generation) ||
+		candidate.generation < 0 ||
+		typeof candidate.sessionId !== 'string' ||
+		candidate.sessionId.length === 0
+	)
+		return null;
+	if (action === 'scroll') {
+		if (
+			typeof candidate.deltaX !== 'number' ||
+			typeof candidate.deltaY !== 'number' ||
+			!Number.isFinite(candidate.deltaX) ||
+			!Number.isFinite(candidate.deltaY) ||
+			Math.abs(candidate.deltaX) > 1 ||
+			Math.abs(candidate.deltaY) > 1
+		)
+			return null;
+		return {
+			action,
+			x: candidate.x,
+			y: candidate.y,
+			deltaX: candidate.deltaX,
+			deltaY: candidate.deltaY,
+			generation: candidate.generation,
+			sessionId: candidate.sessionId,
+		};
+	}
+	if ('deltaX' in candidate || 'deltaY' in candidate) return null;
+	return {
+		action,
+		x: candidate.x,
+		y: candidate.y,
+		generation: candidate.generation,
+		sessionId: candidate.sessionId,
+	};
+}
 
 function isOwnerSocket(socket: Io.Socket): boolean {
 	const remoteAddress = socket.request.socket.remoteAddress ?? '';
@@ -53,6 +121,9 @@ export default class IpadSocket {
 	) {
 		this.socket.join(this.roomId);
 		this.installHandlers();
+		this.socket.emit('IPAD_TOUCH_CAPABILITY', {
+			enabled: isIpadTouchEnabled(),
+		});
 	}
 
 	private installHandlers(): void {
@@ -170,6 +241,21 @@ export default class IpadSocket {
 				signal.type,
 				signal.payload,
 				result.state,
+			);
+		});
+
+		this.socket.on('IPAD_INPUT', (payload: unknown) => {
+			if (!isIpadTouchEnabled() || isOwnerSocket(this.socket)) return;
+			const input = parseIpadInput(payload);
+			if (!input) return;
+			const result = acceptIpadInput(
+				this.socket.id,
+				input.generation,
+				input.sessionId,
+				input,
+			);
+			logLifecycle(
+				`input action=${input.action} socket=${this.socket.id} result=${result.kind}`,
 			);
 		});
 

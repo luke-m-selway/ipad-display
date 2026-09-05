@@ -164,3 +164,54 @@ test('L: duplicate and late signalling is harmless and direct', () => {
 	);
 	assert.equal(coordinator.markStreaming('viewer-a').kind, 'accepted');
 });
+
+test('M: input is ignored before streaming and accepted once streaming', () => {
+	const coordinator = startWithOwnerAndViewer();
+	assert.equal(
+		coordinator.acceptInput('viewer-a', 1, 'session-1').kind,
+		'ignored',
+	);
+	coordinator.requestNegotiation('viewer-a');
+	assert.equal(
+		coordinator.acceptInput('viewer-a', 1, 'session-1').kind,
+		'ignored',
+	);
+	coordinator.markStreaming('viewer-a');
+	assert.equal(
+		coordinator.acceptInput('viewer-a', 1, 'session-1').kind,
+		'accepted',
+	);
+});
+
+test('N: input from a stale viewer, wrong generation, or wrong session is ignored', () => {
+	const coordinator = startWithOwnerAndViewer();
+	coordinator.requestNegotiation('viewer-a');
+	coordinator.markStreaming('viewer-a');
+	assert.equal(
+		coordinator.acceptInput('viewer-b', 1, 'session-1').kind,
+		'ignored',
+	);
+	assert.equal(
+		coordinator.acceptInput('viewer-a', 2, 'session-1').kind,
+		'ignored',
+	);
+	assert.equal(
+		coordinator.acceptInput('viewer-a', 1, 'session-2').kind,
+		'ignored',
+	);
+	assert.equal(
+		coordinator.acceptInput('viewer-a', 1, 'session-1').kind,
+		'accepted',
+	);
+});
+
+test('O: input from a replaced viewer becomes stale immediately', () => {
+	const coordinator = startWithOwnerAndViewer();
+	coordinator.requestNegotiation('viewer-a');
+	coordinator.markStreaming('viewer-a');
+	coordinator.registerViewer('viewer-1', 'document-1', 'viewer-b');
+	assert.equal(
+		coordinator.acceptInput('viewer-a', 1, 'session-1').kind,
+		'ignored',
+	);
+});

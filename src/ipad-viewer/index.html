@@ -13,14 +13,20 @@
     <style>
       html, body, video { width: 100%; height: 100%; margin: 0; background: #000; }
       video { display: block; object-fit: contain; }
-      #status { position: fixed; inset: auto 12px 12px; color: #777; font: 12px -apple-system, sans-serif; }
+      #touch-surface { position: fixed; inset: 0; z-index: 1; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+      #touch-surface[hidden] { display: none; }
+      #touch-control { position: fixed; z-index: 3; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); min-width: 56px; min-height: 44px; border: 1px solid rgba(255, 255, 255, .45); border-radius: 10px; background: rgba(24, 24, 24, .86); color: #fff; font: 600 14px -apple-system, sans-serif; }
+      #touch-control[hidden] { display: none; }
+      #status { position: fixed; z-index: 2; inset: auto 12px 12px; color: #777; font: 12px -apple-system, sans-serif; pointer-events: none; }
       #status[hidden] { display: none; }
-      #fullscreen-hint { position: fixed; inset: auto 12px 12px; color: #bbb; font: 12px -apple-system, sans-serif; }
+      #fullscreen-hint { position: fixed; z-index: 2; inset: auto 12px 12px; color: #bbb; font: 12px -apple-system, sans-serif; pointer-events: none; }
       #fullscreen-hint[hidden] { display: none; }
     </style>
   </head>
   <body>
     <video id="video" autoplay muted playsinline></video>
+    <div id="touch-surface" hidden aria-hidden="true"></div>
+    <button id="touch-control" type="button" hidden></button>
     <div id="status">Connecting…</div>
     <div id="fullscreen-hint" hidden>Tap for fullscreen</div>
     <script src="/vendor/socket.io.min.js"></script>
@@ -29,6 +35,8 @@
       (() => {
         const ROOM_ID = 'ipad-main';
         const video = document.getElementById('video');
+        const touchSurface = document.getElementById('touch-surface');
+        const touchControl = document.getElementById('touch-control');
         const status = document.getElementById('status');
         const fullscreenHint = document.getElementById('fullscreen-hint');
         const SimplePeer = window['SimplePeer'];
@@ -62,33 +70,297 @@
         let registeredGeneration = null;
         let deviceDetailsGeneration = null;
         let needsFreshPeer = false;
+        let touchEnabled = false;
+        let touchCapabilityKnown = false;
+        let macControlEnabled = true;
+        const DRAG_THRESHOLD_PX = 12;
+        const SYSTEM_GESTURE_THRESHOLD_PX = 45;
+        const newTouchGesture = (mode = 'idle') => ({
+          mode,
+          primaryId: null,
+          start: null,
+          last: null,
+          fired: false,
+        });
+        let touchGesture = newTouchGesture();
 
         const setStatus = (text, isStreaming = false) => {
           status.textContent = text;
           status.hidden = isStreaming;
         };
 
-        const isFullscreen = () =>
-          document.fullscreenElement || document.webkitFullscreenElement;
+        // iPadOS WebKit can expose element fullscreen only through its legacy
+        // state properties, leaving the modern element slots unset.
+        const isElementFullscreen = () =>
+          Boolean(
+            document.fullscreenElement ||
+            document.webkitFullscreenElement ||
+            document.webkitCurrentFullScreenElement ||
+            document.webkitIsFullScreen,
+          );
+
+        const matchesDisplayMode = (mode) =>
+          typeof window.matchMedia === 'function' &&
+          window.matchMedia(`(display-mode: ${mode})`).matches;
+
+        const isStandaloneViewer = () =>
+          window.navigator.standalone === true ||
+          matchesDisplayMode('standalone') ||
+          matchesDisplayMode('fullscreen');
+
+        const isImmersiveViewer = () =>
+          isStandaloneViewer() || isElementFullscreen();
 
         const updateFullscreenHint = () => {
-          fullscreenHint.hidden = !isStreaming || Boolean(isFullscreen());
+          fullscreenHint.hidden = !isStreaming || isImmersiveViewer();
+        };
+
+        const videoPoint = (touch) => {
+          if (!touch || !video.videoWidth || !video.videoHeight) return null;
+          const box = video.getBoundingClientRect();
+          const scale = Math.min(box.width / video.videoWidth, box.height / video.videoHeight);
+          const width = video.videoWidth * scale;
+          const height = video.videoHeight * scale;
+          const left = box.left + (box.width - width) / 2;
+          const top = box.top + (box.height - height) / 2;
+          if (touch.clientX < left || touch.clientX > left + width || touch.clientY < top || touch.clientY > top + height) return null;
+          return {
+            x: (touch.clientX - left) / width,
+            y: (touch.clientY - top) / height,
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+          };
+        };
+
+        const touchWithId = (touches, identifier) =>
+          Array.from(touches).find((touch) => touch.identifier === identifier);
+
+        const touchCentroid = (touches, count) => {
+          const points = Array.from(touches).slice(0, count).map(videoPoint);
+          if (points.length !== count || points.some((point) => !point)) return null;
+          return points.reduce((center, point) => ({
+            x: center.x + point.x / count,
+            y: center.y + point.y / count,
+            clientX: center.clientX + point.clientX / count,
+            clientY: center.clientY + point.clientY / count,
+          }), { x: 0, y: 0, clientX: 0, clientY: 0 });
+        };
+
+        const centroid = (touches) => touchCentroid(touches, 2);
+        const threeFingerCentroid = (touches) =>
+          touches.length === 3 ? touchCentroid(touches, 3) : null;
+
+        const canSendTouch = () =>
+          touchEnabled && macControlEnabled && isStreaming && isImmersiveViewer() && lifecycle &&
+          lifecycle.phase === 'streaming' && lifecycle.viewer?.socketId === socket.id;
+
+        const emitInput = (action, point, deltaX, deltaY) => {
+          if (!canSendTouch() || !point) return;
+          const payload = {
+            action,
+            x: point.x,
+            y: point.y,
+            generation: lifecycle.generation,
+            sessionId: lifecycle.sessionId,
+          };
+          if (action === 'scroll') {
+            payload.deltaX = deltaX;
+            payload.deltaY = deltaY;
+          }
+          const emitter = action === 'drag' || action === 'scroll' || action === 'move'
+            ? (socket.volatile || socket) : socket;
+          emitter.emit('IPAD_INPUT', payload);
+        };
+
+        const releaseActiveDrag = () => {
+          if (touchGesture.mode === 'dragging' && touchGesture.last) {
+            emitInput('up', touchGesture.last);
+            touchGesture = newTouchGesture();
+          }
+        };
+
+        const resetTouchGesture = () => {
+          releaseActiveDrag();
+          touchGesture = newTouchGesture();
+        };
+
+        const ignoreTouchesUntilLift = () => {
+          releaseActiveDrag();
+          touchGesture = newTouchGesture('ignored');
+        };
+
+        const beginSystemGesture = (touches) => {
+          const start = threeFingerCentroid(touches);
+          if (!start) {
+            ignoreTouchesUntilLift();
+            return;
+          }
+          // Three fingers can replace a pending click or scroll, never a held drag.
+          touchGesture = newTouchGesture('system');
+          touchGesture.start = start;
+          touchGesture.last = start;
+        };
+
+        const handleSystemGestureMove = (touches) => {
+          if (touches.length !== 3) {
+            ignoreTouchesUntilLift();
+            return;
+          }
+          const point = threeFingerCentroid(touches);
+          if (!point || !touchGesture.start || touchGesture.fired) return;
+          const deltaX = point.clientX - touchGesture.start.clientX;
+          const deltaY = point.clientY - touchGesture.start.clientY;
+          if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < SYSTEM_GESTURE_THRESHOLD_PX) return;
+          touchGesture.fired = true;
+          if (Math.abs(deltaX) > Math.abs(deltaY)) {
+            emitInput(deltaX < 0 ? 'space_right' : 'space_left', point);
+          } else if (deltaY < 0) {
+            emitInput('mission_control', point);
+          }
+        };
+
+        const handleTouchStart = (event) => {
+          event.preventDefault();
+          if (!canSendTouch()) return;
+          if (event.touches.length > 3) {
+            ignoreTouchesUntilLift();
+            return;
+          }
+          if (event.touches.length === 3) {
+            if (touchGesture.mode === 'dragging') {
+              ignoreTouchesUntilLift();
+              return;
+            }
+            if (touchGesture.mode !== 'ignored') beginSystemGesture(event.touches);
+            return;
+          }
+          if (touchGesture.mode === 'ignored' || touchGesture.mode === 'dragging' ||
+              touchGesture.mode === 'scrolling' || touchGesture.mode === 'system') return;
+          if (event.touches.length === 1) {
+            const start = videoPoint(event.touches[0]);
+            if (!start) {
+              ignoreTouchesUntilLift();
+              return;
+            }
+            event.preventDefault();
+            touchGesture = newTouchGesture('pending');
+            touchGesture.primaryId = event.touches[0].identifier;
+            touchGesture.start = start;
+            touchGesture.last = start;
+            return;
+          }
+          const center = centroid(event.touches);
+          event.preventDefault();
+          if (!center || touchGesture.mode !== 'pending') {
+            ignoreTouchesUntilLift();
+            return;
+          }
+          // This is a positioning move for scrolling, not general hover forwarding.
+          emitInput('move', center);
+          touchGesture = newTouchGesture('scrolling');
+          touchGesture.last = center;
+        };
+
+        const handleTouchMove = (event) => {
+          event.preventDefault();
+          if (!canSendTouch()) return;
+          if (touchGesture.mode === 'system') {
+            handleSystemGestureMove(event.touches);
+            return;
+          }
+          if (event.touches.length > 3) {
+            ignoreTouchesUntilLift();
+            return;
+          }
+          if (event.touches.length === 3) {
+            if (touchGesture.mode === 'dragging') ignoreTouchesUntilLift();
+            else if (touchGesture.mode !== 'ignored') beginSystemGesture(event.touches);
+            return;
+          }
+          if (touchGesture.mode === 'ignored') return;
+          if (touchGesture.mode === 'scrolling') {
+            const center = centroid(event.touches);
+            if (!center || !touchGesture.last) return;
+            event.preventDefault();
+            const deltaX = center.x - touchGesture.last.x;
+            const deltaY = center.y - touchGesture.last.y;
+            if (deltaX || deltaY) emitInput('scroll', center, deltaX, deltaY);
+            touchGesture.last = center;
+            return;
+          }
+          const touch = touchWithId(event.touches, touchGesture.primaryId);
+          const point = videoPoint(touch);
+          if (!point) return;
+          event.preventDefault();
+          if (touchGesture.mode === 'pending') {
+            const distance = Math.hypot(point.clientX - touchGesture.start.clientX, point.clientY - touchGesture.start.clientY);
+            if (distance > DRAG_THRESHOLD_PX) {
+              emitInput('down', touchGesture.start);
+              touchGesture.mode = 'dragging';
+            }
+          }
+          if (touchGesture.mode === 'dragging') emitInput('drag', point);
+          touchGesture.last = point;
+        };
+
+        const handleTouchEnd = (event) => {
+          event.preventDefault();
+          if (!canSendTouch()) return;
+          if (touchGesture.mode === 'ignored') {
+            if (event.touches.length === 0) touchGesture = newTouchGesture();
+            return;
+          }
+          if (touchGesture.mode === 'system') {
+            touchGesture = event.touches.length ? newTouchGesture('ignored') : newTouchGesture();
+            return;
+          }
+          if (touchGesture.mode === 'scrolling') {
+            if (event.touches.length < 2) touchGesture = event.touches.length ? newTouchGesture('ignored') : newTouchGesture();
+            return;
+          }
+          const ended = touchWithId(event.changedTouches, touchGesture.primaryId);
+          if (!ended) return;
+          event.preventDefault();
+          const point = videoPoint(ended) || touchGesture.last;
+          if (touchGesture.mode === 'pending' && point) emitInput('click', point);
+          if (touchGesture.mode === 'dragging' && point) emitInput('up', point);
+          touchGesture = event.touches.length ? newTouchGesture('ignored') : newTouchGesture();
+        };
+
+        const handleTouchCancel = (event) => {
+          event.preventDefault();
+          if (!canSendTouch()) return;
+          ignoreTouchesUntilLift();
+          if (event.touches.length === 0) touchGesture = newTouchGesture();
+        };
+
+        const requestElementFullscreen = () => {
+          const root = document.documentElement;
+          const request = root.requestFullscreen || root.webkitRequestFullscreen || root.webkitRequestFullScreen;
+          if (typeof request !== 'function') return false;
+          const result = request.call(root);
+          if (result && typeof result.catch === 'function') {
+            void result.catch(() => {
+              // iPadOS only permits this call from the gesture that triggered it.
+            });
+          }
+          return true;
         };
 
         const requestFullscreenFromGesture = () => {
-          if (isFullscreen()) return;
+          if (isImmersiveViewer()) return;
 
-          if (typeof document.documentElement.requestFullscreen === 'function') {
-            void document.documentElement.requestFullscreen().catch(() => {
-              // iPadOS only permits this call from the gesture that triggered it.
-            });
-          } else if (typeof video.webkitEnterFullscreen === 'function') {
+          if (requestElementFullscreen()) return;
+          // Never enter native video fullscreen until the server has confirmed
+          // display-only mode: touch mode needs the DOM overlay to own gestures.
+          if (touchCapabilityKnown && !touchEnabled && typeof video.webkitEnterFullscreen === 'function') {
             video.webkitEnterFullscreen();
           }
         };
 
-        const enterFullscreenOnTap = () => {
-          if (!isStreaming || isFullscreen()) return;
+        const enterFullscreenOnTap = (event) => {
+          if (touchEnabled) event.preventDefault();
+          if (!isStreaming || isImmersiveViewer()) return;
 
           // Safari emits both pointerup and touchend for one finger gesture.
           // Let the first event retain user activation, then ignore its twin.
@@ -98,12 +370,62 @@
           requestFullscreenFromGesture();
         };
 
+        const installFullscreenEntryTarget = () => {
+          document.removeEventListener('pointerup', enterFullscreenOnTap);
+          document.removeEventListener('touchend', enterFullscreenOnTap);
+          touchSurface.removeEventListener('pointerup', enterFullscreenOnTap);
+          touchSurface.removeEventListener('touchend', enterFullscreenOnTap);
+          if (touchEnabled && !macControlEnabled) return;
+          const target = touchEnabled ? touchSurface : document;
+          target.addEventListener('pointerup', enterFullscreenOnTap);
+          target.addEventListener('touchend', enterFullscreenOnTap, { passive: false });
+        };
+
+        const updateTouchControl = () => {
+          touchSurface.hidden = !touchEnabled || !macControlEnabled;
+          touchControl.hidden = !touchEnabled;
+          touchControl.textContent = macControlEnabled ? 'iPad' : 'Mac';
+          touchControl.setAttribute(
+            'aria-label',
+            macControlEnabled ? 'Give control to iPad' : 'Resume Mac control',
+          );
+          installFullscreenEntryTarget();
+        };
+
+        const setMacControlEnabled = (enabled, requestFullscreen = false) => {
+          if (macControlEnabled === enabled) return;
+          if (!enabled) resetTouchGesture();
+          macControlEnabled = enabled;
+          updateTouchControl();
+          if (enabled && requestFullscreen) requestFullscreenFromGesture();
+        };
+
+        const setTouchEnabled = (enabled) => {
+          touchCapabilityKnown = true;
+          if (!enabled) resetTouchGesture();
+          touchEnabled = enabled === true;
+          updateTouchControl();
+        };
+
         // Fullscreen requires a real user activation on iPadOS. Keep this outside
         // stream setup so requesting it never recreates the PeerConnection.
-        document.addEventListener('pointerup', enterFullscreenOnTap);
-        document.addEventListener('touchend', enterFullscreenOnTap);
-        document.addEventListener('fullscreenchange', updateFullscreenHint);
-        document.addEventListener('webkitfullscreenchange', updateFullscreenHint);
+        installFullscreenEntryTarget();
+        const handleFullscreenChange = () => {
+          if (!isImmersiveViewer()) releaseActiveDrag();
+          updateFullscreenHint();
+        };
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+        touchSurface.addEventListener('touchstart', handleTouchStart, { passive: false });
+        touchSurface.addEventListener('touchmove', handleTouchMove, { passive: false });
+        touchSurface.addEventListener('touchend', handleTouchEnd, { passive: false });
+        touchSurface.addEventListener('touchcancel', handleTouchCancel, { passive: false });
+        touchControl.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!touchEnabled) return;
+          setMacControlEnabled(!macControlEnabled, true);
+        });
 
         // This is the stock Deskreen viewer contract: a non-initiating
         // simple-peer receives CALL_USER signals and returns CALL_ACCEPTED signals.
@@ -239,6 +561,10 @@
 		  registerForCurrentGeneration();
         });
 
+        socket.on('IPAD_TOUCH_CAPABILITY', ({ enabled }) => {
+          setTouchEnabled(enabled);
+        });
+
         socket.on('IPAD_LIFECYCLE', (nextLifecycle) => {
           lifecycle = nextLifecycle;
           if (
@@ -280,6 +606,7 @@
           // A different document now owns this persisted viewer identity. It
           // must not reconnect later and steal authority back from that document.
           pageIsTearingDown = true;
+		  releaseActiveDrag();
           clearViewerSessionState();
           disposePeer();
           socket.disconnect();
@@ -290,6 +617,7 @@
         });
 
         window.addEventListener('beforeunload', () => {
+		  releaseActiveDrag();
           pageIsTearingDown = true;
         });
       })();

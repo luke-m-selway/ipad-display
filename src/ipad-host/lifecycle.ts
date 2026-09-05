@@ -155,6 +155,19 @@ export class IpadLifecycleCoordinator {
 		return this.accepted();
 	}
 
+	acceptInput(
+		socketId: string,
+		generation: number,
+		sessionId: string,
+	): IpadLifecycleResult {
+		if (!this.isCurrentSession(sessionId)) return this.ignored('stale-session');
+		if (generation !== this.state.generation)
+			return this.ignored('stale-generation');
+		if (!this.isCurrentViewer(socketId)) return this.ignored('stale-viewer');
+		if (this.state.phase !== 'streaming') return this.ignored('not-streaming');
+		return this.accepted();
+	}
+
 	getSignalTarget(
 		socketId: string,
 		type: string,

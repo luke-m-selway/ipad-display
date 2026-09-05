@@ -11,10 +11,13 @@ import { initGlobals } from '../main/helpers/initGlobals';
 import { startLogBufferCleanup } from '../main/utils/LoggerWithFilePrefix';
 import { signalingServer } from '../server';
 import {
+	addIpadLifecycleStateListener,
 	requestIpadReset,
+	setIpadInputHandler,
 	setIpadLifecycleResetHandler,
 	startIpadLifecycleSession,
 } from './lifecycleRuntime';
+import { IpadInputBridge } from './inputBridge';
 
 const IPAD_BIND_IP = '192.168.2.1';
 const IPAD_PORT = 3131;
@@ -33,6 +36,8 @@ const ownerToken = process.env.IPAD_OWNER_TOKEN ?? '';
 type VirtualDisplaySource = {
 	sourceID: string;
 	displayID: string;
+	x: number;
+	y: number;
 	width: number;
 	height: number;
 	captureWidth: number;
@@ -41,10 +46,12 @@ type VirtualDisplaySource = {
 
 let virtualDisplay: VirtualDisplaySource | null = null;
 let sharingSession: SharingSession | null = null;
+let inputBridge: IpadInputBridge | null = null;
 let restartInProgress = false;
 let isQuitting = false;
 const isIpadStallDiagnosticsEnabled =
 	process.env.IPAD_STALL_DIAGNOSTICS === '1';
+const isIpadTouchMode = process.env.IPAD_TOUCH_MODE === '1';
 
 const hostUser: LocalPeerUser = {
 	username: 'iPad-Host',
@@ -121,11 +128,29 @@ async function findVirtualDisplay(): Promise<VirtualDisplaySource | null> {
 	return {
 		sourceID: source.id,
 		displayID: expectedDisplayID,
+		x: display.bounds.x,
+		y: display.bounds.y,
 		width: display.bounds.width,
 		height: display.bounds.height,
 		captureWidth: IPAD_CAPTURE_WIDTH,
 		captureHeight: IPAD_CAPTURE_HEIGHT,
 	};
+}
+
+function startIpadInput(source: VirtualDisplaySource): void {
+	if (!isIpadTouchMode) return;
+	inputBridge = new IpadInputBridge(source);
+	inputBridge.start();
+	setIpadInputHandler((input) => inputBridge?.handle(input));
+	addIpadLifecycleStateListener((_, result) => {
+		if (
+			result.kind === 'viewer-replaced' ||
+			result.kind === 'viewer-document-replaced' ||
+			result.kind === 'start-reset'
+		) {
+			inputBridge?.release();
+		}
+	});
 }
 
 async function waitForVirtualDisplay(): Promise<VirtualDisplaySource> {
@@ -315,6 +340,7 @@ async function startIpadHost(): Promise<void> {
 		);
 	}
 	virtualDisplay = await waitForVirtualDisplay();
+	startIpadInput(virtualDisplay);
 	sharingSession = createSharingSession(virtualDisplay);
 	writeFileSync(readyStateFile, ownerToken, 'utf8');
 	console.log(`[iPad Host] Ready at http://${IPAD_BIND_IP}:${IPAD_PORT}/`);
@@ -322,6 +348,8 @@ async function startIpadHost(): Promise<void> {
 
 app.on('before-quit', () => {
 	isQuitting = true;
+	setIpadInputHandler(null);
+	inputBridge?.stop();
 	sharingSession?.destroy();
 	try {
 		signalingServer.stop();

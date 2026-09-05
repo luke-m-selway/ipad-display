@@ -8,8 +8,12 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STATE_DIR="/tmp/ipad-display"
 VIRTUAL_DISPLAY_BIN="$STATE_DIR/ipad-4x3-display"
 VIRTUAL_DISPLAY_SOURCE="$REPO_DIR/scripts/ipad-4x3-display.m"
+INPUT_HELPER_DIR="${HOME}/.local/lib/ipad-display"
+INPUT_HELPER_BIN="$INPUT_HELPER_DIR/ipad-input-helper"
+INPUT_HELPER_SOURCE="$REPO_DIR/scripts/ipad-input-helper.m"
 HOST_PID_FILE="$STATE_DIR/host.pid"
 DISPLAY_PID_FILE="$STATE_DIR/virtual-display.pid"
+MODE_FILE="$STATE_DIR/mode"
 DISPLAY_ID_FILE="$STATE_DIR/virtual-display-id"
 HOST_READY_FILE="$STATE_DIR/host-ready"
 LOG_FILE="$STATE_DIR/ipad.log"
@@ -108,6 +112,7 @@ stop_stack() {
   terminate_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN" "virtual display"
   rm -f "$DISPLAY_ID_FILE"
   rm -f "$HOST_READY_FILE"
+  rm -f "$MODE_FILE"
   log "iPad display stack stopped"
 }
 
@@ -130,6 +135,19 @@ ensure_virtual_display_binary() {
   if [ ! -x "$VIRTUAL_DISPLAY_BIN" ] || [ "$VIRTUAL_DISPLAY_SOURCE" -nt "$VIRTUAL_DISPLAY_BIN" ]; then
     log "Building virtual-display helper"
     clang -o "$VIRTUAL_DISPLAY_BIN" "$VIRTUAL_DISPLAY_SOURCE" -framework Cocoa -framework CoreGraphics
+  fi
+}
+
+ensure_input_helper() {
+  if [ ! -f "$INPUT_HELPER_SOURCE" ]; then
+    error "Input-helper source is missing: $INPUT_HELPER_SOURCE"
+    return 1
+  fi
+  if [ ! -x "$INPUT_HELPER_BIN" ] || [ "$INPUT_HELPER_SOURCE" -nt "$INPUT_HELPER_BIN" ]; then
+    log "Building touch input helper at $INPUT_HELPER_BIN"
+    mkdir -p "$INPUT_HELPER_DIR"
+    clang -fobjc-arc -framework Foundation -framework ApplicationServices \
+      "$INPUT_HELPER_SOURCE" -o "$INPUT_HELPER_BIN"
   fi
 }
 
@@ -194,13 +212,56 @@ wait_for_display_identity() {
   return 1
 }
 
+mode_for_owned_host() {
+  local remove_stale_mode_record="$1"
+  if ! is_owned_process "$HOST_PID_FILE" "$HOST_ENTRY"; then
+    if [ "$remove_stale_mode_record" = true ]; then
+      rm -f "$MODE_FILE"
+    fi
+    return 1
+  fi
+  local mode token extra record host_token
+  record="$(read_pid_record "$HOST_PID_FILE")" || return 1
+  host_token="${record#*$'\n'}"
+  if [ -f "$MODE_FILE" ]; then
+    read -r mode token extra < "$MODE_FILE" || true
+    if [[ ( "$mode" == "display" || "$mode" == "touch" ) && "$token" == "$host_token" && -z "${extra:-}" ]]; then
+      printf '%s\n' "$mode"
+      return 0
+    fi
+  fi
+  # Pre-touch stacks have no mode record and are always the safe display mode.
+  printf '%s\n' "display"
+}
+
+running_mode() {
+  mode_for_owned_host true
+}
+
+status_mode() {
+  # Status must not discard another invocation's ownership record; start/stop
+  # are the lifecycle operations that clean stale state.
+  mode_for_owned_host false
+}
+
+stop_command_for_mode() {
+  [ "$1" = "touch" ] && printf 'ipad touch stop' || printf 'ipad stop'
+}
+
 start_stack() {
+  local requested_mode="$1"
   clear_stale_record "$HOST_PID_FILE" "$HOST_ENTRY"
   clear_stale_record "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"
 
-  if is_owned_process "$HOST_PID_FILE" "$HOST_ENTRY"; then
-    log "iPad display host is already running"
-    return 0
+  local active_mode
+  active_mode="$(running_mode || true)"
+  if [ -n "$active_mode" ]; then
+    if [ "$active_mode" = "$requested_mode" ]; then
+      log "iPad ${requested_mode} mode is already running"
+      return 0
+    fi
+    error "iPad ${active_mode} mode is running; stop it with '$(stop_command_for_mode "$active_mode")' before starting ${requested_mode} mode"
+    return 1
   fi
   if is_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"; then
     log "Removing partial stack from an earlier invocation"
@@ -209,6 +270,9 @@ start_stack() {
 
   ensure_fixed_network
   ensure_virtual_display_binary
+  if [ "$requested_mode" = "touch" ]; then
+    ensure_input_helper
+  fi
   ensure_host_build
 
   local electron_bin
@@ -234,12 +298,13 @@ start_stack() {
   fi
 
   log "Starting iPad host"
-  IPAD_MODE=1 IPAD_BIND_IP="$FIXED_IP" IPAD_FIXED_ROOM_ID="ipad-main" \
+  IPAD_MODE=1 IPAD_TOUCH_MODE="$([ "$requested_mode" = "touch" ] && echo 1 || echo 0)" IPAD_BIND_IP="$FIXED_IP" IPAD_FIXED_ROOM_ID="ipad-main" \
     IPAD_DISPLAY_ID_FILE="$DISPLAY_ID_FILE" IPAD_READY_FILE="$HOST_READY_FILE" \
     IPAD_OWNER_TOKEN="$owner_token" \
     "$electron_bin" "$HOST_ENTRY" --ipad-display-owner "$owner_token" >> "$LOG_FILE" 2>&1 &
   local host_pid=$!
   printf '%s %s\n' "$host_pid" "$owner_token" > "$HOST_PID_FILE"
+  printf '%s %s\n' "$requested_mode" "$owner_token" > "$MODE_FILE"
 
   local server_was_listening=false
   for _ in $(seq 1 "$HOST_READY_TIMEOUT_SECONDS"); do
@@ -273,25 +338,47 @@ start_stack() {
   return 1
 }
 
-status_stack() {
-  clear_stale_record "$HOST_PID_FILE" "$HOST_ENTRY"
-  clear_stale_record "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"
-  if is_owned_process "$HOST_PID_FILE" "$HOST_ENTRY"; then
-    echo "iPad host is running at http://${FIXED_IP}:${FIXED_PORT}/"
-  else
-    echo "iPad host is not running"
+stop_requested_mode() {
+  local requested_mode="$1"
+  local active_mode
+  active_mode="$(running_mode || true)"
+  if [ -z "$active_mode" ]; then
+    log "iPad display stack is already stopped"
+    return 0
   fi
+  if [ "$active_mode" != "$requested_mode" ]; then
+    error "iPad ${active_mode} mode is running; use '$(stop_command_for_mode "$active_mode")'"
+    return 1
+  fi
+  stop_stack
+}
+
+status_stack() {
+  local active_mode
+  active_mode="$(status_mode || true)"
+  case "$active_mode" in
+    display) echo "iPad mode: display-only" ;;
+    touch) echo "iPad mode: touch" ;;
+    *) echo "iPad mode: stopped" ;;
+  esac
   if is_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"; then
     echo "Virtual display is owned by this stack"
   fi
 }
 
 case "${1:-start}" in
-  start) start_stack ;;
-  stop) stop_stack ;;
+  start) start_stack display ;;
+  stop) stop_requested_mode display ;;
+  touch)
+    case "${2:-start}" in
+      start) start_stack touch ;;
+      stop) stop_requested_mode touch ;;
+      *) echo "Usage: ipad touch [stop]"; exit 1 ;;
+    esac
+    ;;
   status) status_stack ;;
   *)
-    echo "Usage: ipad [start|stop|status]"
+    echo "Usage: ipad [start|stop|status] | ipad touch [stop]"
     exit 1
     ;;
 esac

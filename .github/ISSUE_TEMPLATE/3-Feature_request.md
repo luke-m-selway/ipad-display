@@ -1,19 +1,17 @@
 ---
 name: Feature request
-about: You want something small added to Deskreen and with concrete code and solution. 🎉 If it is a big enhancement drop it here https://github.com/pavlobu/deskreen/discussions/50
-labels: 'enhancement'
+about: Propose a bounded change within the supported iPad Display setup.
+labels: enhancement
 ---
 
-# Here you post only concrete examples of enhancements with code and solutions that you have. Other BIG enhancements and general ideas of features you would like to see in Deskreen, you post here: https://github.com/pavlobu/deskreen/discussions/50
+## Problem
 
-# Otherwise this issue will be closed.
+## Proposed boundary
 
-<!---
-❗️❗️ Also, please consider donating (https://opencollective.com/deskreen) ❗️❗️
+Describe the requested behavior and what must remain unchanged.
 
-Donations will ensure the following:
+## Supported environment
 
-🔨 Long term maintenance of the project
-🛣 Progress on the roadmap
-🐛 Quick responses to bug reports and help requests
- -->
+- macOS version and Intel Mac model:
+- iPadOS version and viewer type (Safari or Home Screen):
+- Command used (`ipad` or `ipad touch`):
