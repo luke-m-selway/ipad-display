@@ -61,6 +61,7 @@ export default class PeerConnection {
 	stallDiagnosticsCleanup: (() => void) | null = null;
 	captureTrackEndedCleanup: (() => void) | null = null;
 	isSelfDestroying = false;
+	isIpadMode: boolean;
 	ipadLifecycleGeneration: number | null = null;
 	ipadLifecycleSessionID: string | null = null;
 
@@ -70,8 +71,10 @@ export default class PeerConnection {
 		user: LocalPeerUser,
 		port: string,
 		signalingHost?: string,
+		isIpadMode = false,
 	) {
 		this.sharingSessionID = sharingSessionID;
+		this.isIpadMode = isIpadMode;
 		this.isSocketRoomLocked = false;
 		this.roomID = encodeURI(roomID);
 		this.socket = connectSocket(port, this.roomID, signalingHost);
@@ -292,7 +295,7 @@ export default class PeerConnection {
 	}
 
 	emitUserEnter(): void {
-		if (process.env.IPAD_MODE === '1') {
+		if (this.isIpadMode) {
 			this.socket.emit('IPAD_REGISTER_OWNER', {
 				sessionId: this.sharingSessionID,
 			});
@@ -309,7 +312,7 @@ export default class PeerConnection {
 		if (!this.socket) return;
 		if (!this.user) return;
 		const msg = await prepareMessage(payload, this.user);
-		if (process.env.IPAD_MODE === '1') {
+		if (this.isIpadMode) {
 			if (
 				this.ipadLifecycleSessionID !== this.sharingSessionID ||
 				this.ipadLifecycleGeneration === null
@@ -371,7 +374,7 @@ export default class PeerConnection {
 	}
 
 	toggleLockRoom(isConnected: boolean): void {
-		if (process.env.IPAD_MODE === '1') {
+		if (this.isIpadMode) {
 			this.isSocketRoomLocked = isConnected;
 			return;
 		}

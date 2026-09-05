@@ -3,6 +3,7 @@ import {
 	overrideGlobalConsole,
 	startConsoleRateLimiting,
 } from '../../common/rateLimitedConsole';
+
 overrideGlobalConsole();
 startConsoleRateLimiting();
 
@@ -64,9 +65,10 @@ export function handleIpcRenderer(): void {
 					peerConnection = undefined;
 				}
 
-				const [port, signalingHost] = await Promise.all([
+				const [port, signalingHost, isIpadMode] = await Promise.all([
 					window.electron.ipcRenderer.invoke(IpcEvents.GetPort),
 					window.electron.ipcRenderer.invoke(IpcEvents.GetSignalingHost),
+					window.electron.ipcRenderer.invoke(IpcEvents.GetIpadMode),
 				]);
 				peerConnection = new PeerConnection(
 					data.roomID,
@@ -74,6 +76,7 @@ export function handleIpcRenderer(): void {
 					data.user,
 					port,
 					signalingHost,
+					isIpadMode === true,
 				);
 
 				peerConnection.setOnDeviceConnectedCallback((deviceData) => {

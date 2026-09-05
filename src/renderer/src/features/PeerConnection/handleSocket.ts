@@ -3,7 +3,7 @@ import handleSocketUserEnter from './handleSocketUserEnter';
 import handleSocketUserExit from './handleSocketUserExit';
 
 export default function handleSocket(peerConnection: PeerConnection): void {
-	if (process.env.IPAD_MODE === '1') {
+	if (peerConnection.isIpadMode) {
 		handleIpadSocket(peerConnection);
 		return;
 	}

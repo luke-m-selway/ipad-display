@@ -227,6 +227,7 @@ async function restartSharingSession(
 function registerIpadIPCHandlers(): void {
 	ipcMain.handle(IpcEvents.GetPort, () => signalingServer.port);
 	ipcMain.handle(IpcEvents.GetSignalingHost, () => `http://${IPAD_BIND_IP}`);
+	ipcMain.handle(IpcEvents.GetIpadMode, () => process.env.IPAD_MODE === '1');
 	ipcMain.handle(
 		IpcEvents.GetIpadStallDiagnosticsEnabled,
 		() => process.env.IPAD_STALL_DIAGNOSTICS === '1',

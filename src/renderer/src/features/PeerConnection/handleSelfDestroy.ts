@@ -45,7 +45,7 @@ export default function handleSelfDestroy(
 
 	window.electron.ipcRenderer.invoke(
 		IpcEvents.DestroySharingSessionById,
-		process.env.IPAD_MODE === '1'
+		peerConnection.isIpadMode
 			? { sessionID: peerConnection.sharingSessionID, reason }
 			: peerConnection.sharingSessionID,
 	);

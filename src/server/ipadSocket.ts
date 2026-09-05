@@ -27,6 +27,15 @@ function isOwnerSocket(socket: Io.Socket): boolean {
 	);
 }
 
+function getSocketById(socketId: string): Io.Socket | undefined {
+	const sockets = socketIOServerStore.getServer().sockets.sockets;
+	// Socket.IO v4 uses a Map. Keep the fallback for the app's older typed
+	// surface without making direct iPad routing depend on room broadcasts.
+	if (typeof sockets.get === 'function')
+		return sockets.get(socketId) as Io.Socket | undefined;
+	return (sockets as unknown as Record<string, Io.Socket>)[socketId];
+}
+
 function logLifecycle(event: string): void {
 	if (!isDiagnosticsEnabled) return;
 	const state = getIpadLifecycleState();
@@ -97,10 +106,7 @@ export default class IpadSocket {
 					this.socket.emit('IPAD_REJECTED', { reason: result.reason });
 				}
 				if (result.kind === 'viewer-replaced') {
-					const oldSocket =
-						socketIOServerStore.getServer().sockets.sockets[
-							result.previousSocketId
-						];
+					const oldSocket = getSocketById(result.previousSocketId);
 					oldSocket?.emit('IPAD_SUPERSEDED', {
 						generation: result.state.generation,
 					});
@@ -161,14 +167,12 @@ export default class IpadSocket {
 		payload: Record<string, unknown>,
 		state: ReturnType<typeof getIpadLifecycleState>,
 	): void {
-		socketIOServerStore
-			.getServer()
-			.sockets.sockets[targetSocketId]?.emit('IPAD_SIGNAL', {
-				type,
-				payload,
-				fromSocketID: this.socket.id,
-				generation: state.generation,
-				sessionId: state.sessionId,
-			});
+		getSocketById(targetSocketId)?.emit('IPAD_SIGNAL', {
+			type,
+			payload,
+			fromSocketID: this.socket.id,
+			generation: state.generation,
+			sessionId: state.sessionId,
+		});
 	}
 }
