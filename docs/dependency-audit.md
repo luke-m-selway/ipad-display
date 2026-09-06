@@ -49,14 +49,16 @@ change was performed.
 | Root | 33: 1 low, 4 moderate, 24 high, 4 critical | 2 high | 0 |
 | `src/client-viewer` | 17: 7 low, 4 moderate, 6 high | 6 low | 0 |
 
-No reported advisory is production-reachable from `ipad` or `ipad touch` after
-this cleanup.
+`npm audit --omit=dev` is zero because Electron is declared in
+`devDependencies`; it is not a production-reachability proof. `scripts/ipad`
+directly launches Electron's downloaded binary, so the remaining Electron
+advisories are runtime-reachable from `ipad` and `ipad touch`.
 
-Remaining advisories are build/dev-only:
+The remaining advisories are classified as follows:
 
 | Advisory chain | Dependency path | Disposition |
 | --- | --- | --- |
-| `electron`, `extract-zip` (2 high) | root dev dependency `electron` → `extract-zip` | Deferred: the available Electron remediation is a major runtime migration, outside the qualified display/touch surface. |
+| `electron`, `extract-zip` (2 high) | root `devDependency` `electron` → `extract-zip`; Electron binary is launched by `scripts/ipad` | Runtime-reachable and deferred: the available Electron remediation is a major runtime migration, outside the qualified display/touch surface. |
 | `browserify-sign`, `create-ecdh`, `crypto-browserify`, `elliptic`, `node-stdlib-browser`, `vite-plugin-node-polyfills` (6 low) | client-viewer dev dependency `vite-plugin-node-polyfills` → `node-stdlib-browser` → `crypto-browserify` | Deferred: replacing the legacy client browser-polyfill stack is a behavior-affecting build migration. |
 
 Re-run from the root and from `src/client-viewer` after changing either
