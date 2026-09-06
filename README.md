@@ -10,15 +10,19 @@ or cross-platform screen-sharing product.
 Clone the repository on the Mac, then run:
 
 ```bash
+git clone https://github.com/luke-m-selway/ipad-display.git
+cd ipad-display
 ./scripts/install
-ipad doctor
+./scripts/ipad doctor
 ```
 
 The installer provisions the validated Intel Node runtime locally, installs npm
 dependencies using an installer-owned npm cache, builds the host/viewer,
 prebuilds the touch helper, and installs a global `ipad` wrapper where possible.
 It does not depend on the state or ownership of `~/.npm`, and it does not grant
-macOS privacy permissions automatically.
+macOS privacy permissions automatically. If the wrapper directory is not already
+on `PATH`, the installer prints the one-line `~/.zprofile` change needed to add
+it.
 
 Connect and trust the iPad over USB. In **System Settings → General → Sharing →
 Internet Sharing**, share the Mac's **Wi-Fi** connection to **iPad USB** and turn
