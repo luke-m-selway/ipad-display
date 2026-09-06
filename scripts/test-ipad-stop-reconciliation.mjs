@@ -91,6 +91,26 @@ test('stop reconciles the exact legacy project virtual-display helper without a 
 	}
 });
 
+test('stop reconciles a current owner-token helper when its PID record is lost', () => {
+	const pid = startDetachedSleep();
+	const harness = makeHarness(
+		pid,
+		(state) =>
+			`${state}/ipad-4x3-display --state-file ${state}/virtual-display-id --ipad-display-owner token-123`,
+	);
+	try {
+		const output = execFileSync(harness.ipad, ['stop'], {
+			encoding: 'utf8',
+			env: harness.env,
+		});
+		assert.match(output, /iPad display stack stopped/);
+		assert.equal(processExists(pid), false);
+	} finally {
+		if (processExists(pid)) process.kill(pid, 'SIGKILL');
+		rmSync(harness.root, { recursive: true, force: true });
+	}
+});
+
 test('stop leaves a similarly named process with a different executable path untouched', () => {
 	const pid = startDetachedSleep();
 	const harness = makeHarness(
