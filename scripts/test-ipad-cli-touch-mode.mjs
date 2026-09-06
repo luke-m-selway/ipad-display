@@ -21,6 +21,14 @@ test('plain `ipad` starts and stops only display mode', () => {
 	assert.match(script, /stop\)\s*stop_requested_mode display\s*;;/);
 });
 
+test('the host PID is the real Electron process, not npm\'s transient launcher', () => {
+	assert.match(
+		script,
+		/REPO_DIR\/node_modules\/electron\/dist\/Electron\.app\/Contents\/MacOS\/Electron/,
+	);
+	assert.doesNotMatch(script, /REPO_DIR\/node_modules\/\.bin\/electron/);
+});
+
 test('`ipad touch` starts and stops touch mode without touching display-only paths', () => {
 	assert.match(script, /touch\)\s*\n\s*case "\$\{2:-start\}" in\s*\n\s*start\) start_stack touch ;;\s*\n\s*stop\) stop_requested_mode touch ;;/);
 });

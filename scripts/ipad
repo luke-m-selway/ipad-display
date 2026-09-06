@@ -173,7 +173,9 @@ ensure_host_build() {
 }
 
 get_electron_runtime() {
-  local candidate="$REPO_DIR/node_modules/.bin/electron"
+  # The npm .bin entry is a Node launcher that spawns Electron, so recording it
+  # would make status/stop lose ownership of the actual listening host.
+  local candidate="$REPO_DIR/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
   if [ ! -x "$candidate" ] || ! "$candidate" --version >/dev/null 2>&1; then
     error "Electron runtime is incomplete; run npm install with Electron's postinstall script enabled"
     return 1
