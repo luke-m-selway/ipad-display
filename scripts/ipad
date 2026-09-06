@@ -132,7 +132,7 @@ managed_virtual_display_pids() {
     if is_managed_virtual_display_process "$pid"; then
       printf '%s\n' "$pid"
     fi
-  done < <(pgrep -x "$(basename "$VIRTUAL_DISPLAY_BIN")" 2>/dev/null || true)
+  done < <(pgrep -f "$VIRTUAL_DISPLAY_BIN" 2>/dev/null || true)
 }
 
 has_managed_virtual_display_process() {
