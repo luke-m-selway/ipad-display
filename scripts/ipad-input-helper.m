@@ -130,10 +130,12 @@ static void handleCommand(NSArray<NSString *> *parts) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        BOOL checkOnly = argc == 2 && strcmp(argv[1], "--accessibility-check") == 0;
         BOOL spike = argc == 2 && strcmp(argv[1], "--accessibility-spike") == 0;
-        BOOL trusted = accessibilityTrusted(YES);
+        BOOL trusted = accessibilityTrusted(!checkOnly);
         fprintf(stderr, "accessibility-trusted=%s\n", trusted ? "yes" : "no");
         if (!trusted) return 2;
+        if (checkOnly) return 0;
 
         if (spike) {
             // Moving to the existing pointer position proves event posting without changing state.

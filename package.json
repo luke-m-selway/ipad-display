@@ -1,6 +1,8 @@
 {
   "name": "ipad-display",
   "version": "3.2.16",
+  "private": true,
+  "license": "AGPL-3.0-only",
   "description": "Fixed USB iPad secondary display for Intel macOS Ventura",
   "main": "./out/main/index.js",
   "author": "Luke M. Selway",
