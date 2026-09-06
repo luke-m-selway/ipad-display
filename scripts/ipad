@@ -107,9 +107,77 @@ terminate_owned_process() {
   rm -f "$file"
 }
 
+is_managed_virtual_display_process() {
+  local pid="$1"
+  local command base owner_prefix owner
+  kill -0 "$pid" 2>/dev/null || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  base="$VIRTUAL_DISPLAY_BIN --state-file $DISPLAY_ID_FILE"
+
+  # Current helpers carry an owner token. The tokenless exact command is the
+  # legacy project helper shape that can survive after old ownership state is lost.
+  if [ "$command" = "$base" ]; then
+    return 0
+  fi
+  owner_prefix="$base --ipad-display-owner "
+  [[ "$command" == "$owner_prefix"* ]] || return 1
+  owner="${command#"$owner_prefix"}"
+  [[ -n "$owner" && "$owner" != *" "* ]]
+}
+
+managed_virtual_display_pids() {
+  local pid
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    if is_managed_virtual_display_process "$pid"; then
+      printf '%s\n' "$pid"
+    fi
+  done < <(pgrep -x "$(basename "$VIRTUAL_DISPLAY_BIN")" 2>/dev/null || true)
+}
+
+has_managed_virtual_display_process() {
+  local pid
+  while IFS= read -r pid; do
+    if [ -n "$pid" ]; then
+      return 0
+    fi
+  done < <(managed_virtual_display_pids)
+  return 1
+}
+
+terminate_managed_virtual_display_pid() {
+  local pid="$1"
+  is_managed_virtual_display_process "$pid" || return 0
+
+  log "Stopping orphaned iPad virtual display process $pid"
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  if is_managed_virtual_display_process "$pid"; then
+    log "Force-stopping orphaned iPad virtual display process $pid"
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+}
+
+terminate_managed_virtual_display_processes() {
+  local pid
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    terminate_managed_virtual_display_pid "$pid"
+  done < <(managed_virtual_display_pids)
+}
+
 stop_stack() {
   terminate_owned_process "$HOST_PID_FILE" "$HOST_ENTRY" "host"
   terminate_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN" "virtual display"
+  # A legacy or recordless helper still owns a live CGVirtualDisplay. It is safe
+  # to reconcile only the exact project command shape; similarly named or
+  # differently launched processes are left untouched.
+  terminate_managed_virtual_display_processes
   rm -f "$DISPLAY_ID_FILE"
   rm -f "$HOST_READY_FILE"
   rm -f "$MODE_FILE"
@@ -183,21 +251,6 @@ get_electron_runtime() {
   printf '%s\n' "$candidate"
 }
 
-use_existing_virtual_display_if_present() {
-  local pid
-  for pid in $(pgrep -x "$(basename "$VIRTUAL_DISPLAY_BIN")" 2>/dev/null || true); do
-    if ! is_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"; then
-      log "Using external virtual-display helper PID $pid without taking ownership"
-      if ! "$VIRTUAL_DISPLAY_BIN" --write-existing-id --state-file "$DISPLAY_ID_FILE" >> "$LOG_FILE" 2>&1; then
-        error "Could not identify the external virtual display by vendor/product/serial"
-        return 2
-      fi
-      return 0
-    fi
-  done
-  return 1
-}
-
 wait_for_display_identity() {
   local pid="$1"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -268,6 +321,10 @@ start_stack() {
   if is_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"; then
     log "Removing partial stack from an earlier invocation"
     stop_stack
+  elif has_managed_virtual_display_process; then
+    log "Removing orphaned virtual-display helper from an earlier invocation"
+    terminate_managed_virtual_display_processes
+    rm -f "$DISPLAY_ID_FILE" "$DISPLAY_PID_FILE"
   fi
 
   ensure_fixed_network
@@ -287,17 +344,11 @@ start_stack() {
 
   rm -f "$DISPLAY_ID_FILE"
   rm -f "$HOST_READY_FILE"
-  local existing_display_status=0
-  use_existing_virtual_display_if_present || existing_display_status=$?
-  if [ "$existing_display_status" = 1 ]; then
-    log "Starting virtual display"
-    "$VIRTUAL_DISPLAY_BIN" --state-file "$DISPLAY_ID_FILE" --ipad-display-owner "$owner_token" >> "$LOG_FILE" 2>&1 &
-    local display_pid=$!
-    printf '%s %s\n' "$display_pid" "$owner_token" > "$DISPLAY_PID_FILE"
-    wait_for_display_identity "$display_pid"
-  elif [ "$existing_display_status" != 0 ]; then
-    return "$existing_display_status"
-  fi
+  log "Starting virtual display"
+  "$VIRTUAL_DISPLAY_BIN" --state-file "$DISPLAY_ID_FILE" --ipad-display-owner "$owner_token" >> "$LOG_FILE" 2>&1 &
+  local display_pid=$!
+  printf '%s %s\n' "$display_pid" "$owner_token" > "$DISPLAY_PID_FILE"
+  wait_for_display_identity "$display_pid"
 
   log "Starting iPad host"
   IPAD_MODE=1 IPAD_TOUCH_MODE="$([ "$requested_mode" = "touch" ] && echo 1 || echo 0)" IPAD_BIND_IP="$FIXED_IP" IPAD_FIXED_ROOM_ID="ipad-main" \
@@ -345,7 +396,15 @@ stop_requested_mode() {
   local active_mode
   active_mode="$(running_mode || true)"
   if [ -z "$active_mode" ]; then
-    log "iPad display stack is already stopped"
+    if has_managed_virtual_display_process; then
+      log "No active host; reconciling orphaned iPad virtual display"
+      stop_stack
+    else
+      clear_stale_record "$HOST_PID_FILE" "$HOST_ENTRY"
+      clear_stale_record "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"
+      rm -f "$DISPLAY_ID_FILE" "$HOST_READY_FILE" "$MODE_FILE"
+      log "iPad display stack is already stopped"
+    fi
     return 0
   fi
   if [ "$active_mode" != "$requested_mode" ]; then
@@ -365,6 +424,8 @@ status_stack() {
   esac
   if is_owned_process "$DISPLAY_PID_FILE" "$VIRTUAL_DISPLAY_BIN"; then
     echo "Virtual display is owned by this stack"
+  elif has_managed_virtual_display_process; then
+    echo "Orphaned iPad virtual display detected; run 'ipad stop'"
   fi
 }
 
