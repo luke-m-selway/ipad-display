@@ -35,17 +35,19 @@ The network check should report `192.168.2.1` as present before starting the dis
 
 ## 3. Grant Screen Recording for display capture
 
-Run the display once so macOS can register the capture process:
+Run the display once so macOS registers a Screen Recording request:
 
 ```bash
 ipad
 ```
 
-Then open **System Settings → Privacy & Security → Screen Recording** and enable the entry macOS added for the iPad Display/Electron capture process. If macOS asks you to quit or restart the process, do so, then start `ipad` again.
+Then open **System Settings → Privacy & Security → Screen Recording**. For the normal Terminal-launched install, macOS may attribute the request to **Terminal** rather than showing an `iPad Display` or Electron entry. Enable **Terminal** when that is the requester shown. If you launch the project from iTerm2, another terminal, or an IDE instead, enable the application macOS lists for that launch path.
 
-<img src="assets/setup/screen-recording-ventura.png" alt="macOS Ventura Screen Recording privacy settings" width="720">
+Do not wait for a specifically named `iPad Display` entry if macOS has already listed Terminal. After changing the permission, quit/restart the requesting application if macOS asks, then start `ipad` again.
 
-Screenshot source: [Coviu — Enabling Screen Recording/Sharing for macOS Ventura](https://help.coviu.com/knowledge/enabling-screen-recording/sharing-for-mac-os-ventura).
+<img src="assets/setup/screen-recording-ventura.png" alt="macOS Screen Recording settings showing Terminal in the permitted-app list" width="720">
+
+Screenshot source: [CNBlogs — macOS Screen Recording settings example](https://www.cnblogs.com/ZJT7098/p/17695865.html).
 
 ## 4. Open the viewer on the iPad
 
@@ -75,13 +77,15 @@ Start touch mode once:
 ipad touch
 ```
 
-Open **System Settings → Privacy & Security → Accessibility** and enable the entry macOS adds for the iPad touch helper. Restart `ipad touch` if macOS asks you to restart the process after granting permission.
+Open **System Settings → Privacy & Security → Accessibility**. As with Screen Recording, a helper launched from the command line can be attributed to the terminal application that launched it. For the normal Terminal workflow, enable **Terminal** when that is the entry macOS presents. If macOS instead lists the helper itself or another terminal/IDE you used to launch it, enable that listed requester.
 
-<img src="assets/setup/accessibility-ventura.png" alt="macOS Ventura Accessibility privacy settings" width="720">
+Restart `ipad touch` if macOS asks you to restart the requesting process after granting permission.
 
-Screenshot source: [IBM Community — Mac testing made easy](https://community.ibm.com/community/user/blogs/unnati-swami/2023/06/06/mac-testing-made-easy).
+<img src="assets/setup/accessibility-ventura.png" alt="macOS Accessibility settings showing Terminal in the permitted-app list" width="720">
 
-The first three-finger Mission Control or Spaces gesture may also make macOS ask whether the helper may control **System Events**. Approve that Automation request if it appears.
+Screenshot source: [Stack Overflow — Terminal Accessibility example](https://stackoverflow.com/questions/53103394/robot-mousemove-does-not-work-at-all-in-mac-os-x).
+
+The first three-finger Mission Control or Spaces gesture may also make macOS ask whether the requester may control **System Events**. Approve that Automation request if it appears.
 
 ## 6. Final checks
 
