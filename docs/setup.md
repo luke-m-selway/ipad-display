@@ -71,7 +71,7 @@ ipad touch
 
 Open **System Settings → Privacy & Security → Accessibility** and enable the entry macOS adds for the iPad touch helper. Restart `ipad touch` if macOS asks you to restart the process after granting permission.
 
-[<img src="https://usercontent.cdn.cycling74.com/54da727d306ab0fb18bbbd9a/2025-02-11T21%3A24%3A49Z/Screenshot%202025-02-11%20at%204.20.14%E2%80%AFPM.png" alt="macOS Accessibility privacy settings" width="720">](https://cycling74.com/ja/forums/standalone-mac-permissions-launch-problem)
+[<img src="https://dw1.s81c.com/IMWUC/MessageImages/445cbb9452184c8694081f52e8d1cc99.png" alt="macOS Ventura Accessibility privacy settings" width="720">](https://community.ibm.com/community/user/blogs/unnati-swami/2023/06/06/mac-testing-made-easy)
 
 The first three-finger Mission Control or Spaces gesture may also make macOS ask whether the helper may control **System Events**. Approve that Automation request if it appears.
 
