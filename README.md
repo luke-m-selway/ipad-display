@@ -37,29 +37,17 @@ depend on shell `PATH` setup:
 ~/ipad-display/scripts/ipad doctor
 ```
 
-For the remaining macOS/iPad steps, including screenshots of Internet Sharing,
-Screen Recording, Accessibility, and Add to Home Screen, follow the
-[visual setup walkthrough](docs/setup.md).
+Complete the one-time USB/network/privacy setup using the
+[visual setup walkthrough](docs/setup.md). It includes the Internet Sharing,
+Screen Recording, Accessibility, and iPad Home Screen steps with screenshots.
 
-Connect and trust the iPad over USB. In **System Settings → General → Sharing →
-Internet Sharing**, share the Mac's **Wi-Fi** connection to **iPad USB** and turn
-Internet Sharing on. The Mac side must expose `192.168.2.1`.
-
-Start either mode:
+Then start either mode:
 
 ```bash
 ipad
 # or
 ipad touch
 ```
-
-Open `http://192.168.2.1:3131/` on the iPad. For the most direct experience,
-save that page to the iPad Home Screen and launch it as a standalone web app.
-macOS requires **Screen Recording** for display capture and **Accessibility** for
-touch mode; `--open-settings` opens those Settings panes after installation, but
-you still approve the permissions yourself. macOS may also request **Automation**
-permission for System Events the first time a three-finger Mission Control or
-Spaces gesture is used.
 
 | Command | Result |
 | --- | --- |
