@@ -40,7 +40,7 @@ Run the checks relevant to the changed surface. The normal code-change baseline 
 node --test scripts/test-ipad-*.mjs
 npm run typecheck
 npm run build
-bash -n scripts/ipad scripts/install scripts/ipad-doctor
+bash -n scripts/bootstrap scripts/ipad scripts/install scripts/ipad-doctor
 git diff --check
 ```
 

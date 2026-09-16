@@ -1,0 +1,54 @@
+#!/bin/bash
+# Fresh-Mac bootstrap for the supported Intel macOS Ventura target.
+
+set -euo pipefail
+
+REPO_URL="https://github.com/luke-m-selway/ipad-display.git"
+REPO_DIR="${IPAD_DISPLAY_REPO_DIR:-${HOME}/ipad-display}"
+
+say() { printf '%s\n' "$*"; }
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ "$(uname -m)" == "x86_64" ]] || fail "This bootstrap currently supports Intel/x86_64 Macs only."
+[[ "$(sw_vers -productVersion)" == 13.* ]] || fail "This bootstrap currently supports macOS Ventura 13.x only."
+
+if ! xcode-select -p >/dev/null 2>&1 || ! command -v clang >/dev/null 2>&1; then
+  say "Xcode Command Line Tools are required. Opening Apple's installer..."
+  xcode-select --install >/dev/null 2>&1 || true
+  say "Complete the Command Line Tools installation, then rerun the same bootstrap command."
+  exit 2
+fi
+
+if ! command -v git >/dev/null 2>&1 || ! git --version >/dev/null 2>&1; then
+  fail "Git is unavailable after Command Line Tools setup."
+fi
+
+if [[ -e "$REPO_DIR" && ! -d "$REPO_DIR/.git" ]]; then
+  fail "$REPO_DIR already exists but is not an iPad Display Git checkout."
+fi
+
+if [[ -d "$REPO_DIR/.git" ]]; then
+  [[ -z "$(git -C "$REPO_DIR" status --porcelain)" ]] || \
+    fail "$REPO_DIR has local changes; bootstrap will not overwrite them."
+
+  origin_url="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)"
+  case "$origin_url" in
+    "https://github.com/luke-m-selway/ipad-display.git"|\
+    "https://github.com/luke-m-selway/ipad-display"|\
+    "git@github.com:luke-m-selway/ipad-display.git") ;;
+    *) fail "$REPO_DIR does not point at the canonical iPad Display repository." ;;
+  esac
+
+  say "Updating existing iPad Display checkout..."
+  git -C "$REPO_DIR" fetch origin main
+  git -C "$REPO_DIR" switch main
+  git -C "$REPO_DIR" merge --ff-only origin/main
+  [[ "$(git -C "$REPO_DIR" rev-parse HEAD)" == "$(git -C "$REPO_DIR" rev-parse origin/main)" ]] || \
+    fail "Local main contains commits not present on origin/main; refusing to install an ambiguous checkout."
+else
+  say "Cloning iPad Display..."
+  git clone --branch main --single-branch "$REPO_URL" "$REPO_DIR"
+fi
+
+say "Homebrew is not required; the project installer provisions its own Node runtime and dependencies."
+exec "$REPO_DIR/scripts/install" "$@"

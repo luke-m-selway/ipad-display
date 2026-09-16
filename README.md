@@ -7,39 +7,47 @@ or cross-platform screen-sharing product.
 
 ## Quick start
 
-Clone the repository on the Mac, then run:
+A fresh supported Mac does **not** need Homebrew, Node, npm, or Git preinstalled.
+Open Terminal and run:
 
 ```bash
-git clone https://github.com/luke-m-selway/ipad-display.git
-cd ipad-display
-./scripts/install
-./scripts/ipad doctor
+curl -fsSL https://raw.githubusercontent.com/luke-m-selway/ipad-display/main/scripts/bootstrap -o /tmp/ipad-display-bootstrap
+bash /tmp/ipad-display-bootstrap --open-settings
 ```
+
+If Xcode Command Line Tools are missing, Apple's installer opens and the bootstrap
+stops before cloning anything. Finish that installation, then rerun the same two
+commands. The bootstrap validates Intel/x86_64 + macOS Ventura, creates a normal
+Git checkout at `~/ipad-display`, and hands off to the project installer. On a
+later rerun it will update that checkout only when it is clean and still points
+to this repository; it will not overwrite local changes or another directory.
 
 The installer provisions the validated Intel Node runtime locally, installs npm
 dependencies using an installer-owned npm cache, builds the host/viewer,
 prebuilds the touch helper, and installs a global `ipad` wrapper where possible.
-It does not depend on the state or ownership of `~/.npm`, and it does not grant
-macOS privacy permissions automatically. If the wrapper directory is not already
-on `PATH`, the installer prints the one-line `~/.zprofile` change needed to add
-it.
+It does not depend on Homebrew or the state/ownership of `~/.npm`, and it does not
+grant macOS privacy permissions automatically. If the wrapper directory is not
+already on `PATH`, the installer prints the one-line `~/.zprofile` change needed
+to add it.
 
-Connect and trust the iPad over USB. In **System Settings → General → Sharing →
-Internet Sharing**, share the Mac's **Wi-Fi** connection to **iPad USB** and turn
-Internet Sharing on. The Mac side must expose `192.168.2.1`.
+After installation, run the repository-local doctor so the first check does not
+depend on shell `PATH` setup:
 
-Start either mode:
+```bash
+~/ipad-display/scripts/ipad doctor
+```
+
+Complete the one-time USB/network/privacy setup using the
+[visual setup walkthrough](docs/setup.md). It includes the Internet Sharing,
+Screen Recording, Accessibility, and iPad Home Screen steps with screenshots.
+
+Then start either mode:
 
 ```bash
 ipad
 # or
 ipad touch
 ```
-
-Open `http://192.168.2.1:3131/` on the iPad. For the most direct experience,
-save that page to the iPad Home Screen and launch it as a standalone web app.
-macOS will require **Screen Recording** for display capture and **Accessibility**
-for touch mode; approve those prompts in System Settings when requested.
 
 | Command | Result |
 | --- | --- |
