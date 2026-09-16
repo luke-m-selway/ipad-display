@@ -19,7 +19,9 @@ if ! xcode-select -p >/dev/null 2>&1 || ! command -v clang >/dev/null 2>&1; then
   exit 2
 fi
 
-command -v git >/dev/null 2>&1 || fail "Git is unavailable after Command Line Tools setup."
+if ! command -v git >/dev/null 2>&1 || ! git --version >/dev/null 2>&1; then
+  fail "Git is unavailable after Command Line Tools setup."
+fi
 
 if [[ -e "$REPO_DIR" && ! -d "$REPO_DIR/.git" ]]; then
   fail "$REPO_DIR already exists but is not an iPad Display Git checkout."
