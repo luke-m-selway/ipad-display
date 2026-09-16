@@ -37,6 +37,10 @@ depend on shell `PATH` setup:
 ~/ipad-display/scripts/ipad doctor
 ```
 
+For the remaining macOS/iPad steps, including screenshots of Internet Sharing,
+Screen Recording, Accessibility, and Add to Home Screen, follow the
+[visual setup walkthrough](docs/setup.md).
+
 Connect and trust the iPad over USB. In **System Settings → General → Sharing →
 Internet Sharing**, share the Mac's **Wi-Fi** connection to **iPad USB** and turn
 Internet Sharing on. The Mac side must expose `192.168.2.1`.
