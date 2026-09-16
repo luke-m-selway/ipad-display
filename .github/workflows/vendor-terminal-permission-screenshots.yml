@@ -1,0 +1,39 @@
+name: Vendor Terminal permission screenshots
+
+on:
+  push:
+    branches:
+      - docs/terminal-permission-setup
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/terminal-permission-setup
+      - name: Replace permission screenshots with Terminal examples
+        run: |
+          curl --fail --location --silent --show-error \
+            'https://img2023.cnblogs.com/blog/469540/202309/469540-20230912122930197-633129225.png' \
+            -o docs/assets/setup/screen-recording-ventura.png
+          curl --fail --location --silent --show-error \
+            'https://i.sstatic.net/ypgUB.png' \
+            -o docs/assets/setup/accessibility-ventura.png
+          test -s docs/assets/setup/screen-recording-ventura.png
+          test -s docs/assets/setup/accessibility-ventura.png
+          file docs/assets/setup/screen-recording-ventura.png
+          file docs/assets/setup/accessibility-ventura.png
+      - name: Commit screenshots and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/assets/setup/screen-recording-ventura.png docs/assets/setup/accessibility-ventura.png
+          git commit -m 'Use Terminal permission screenshots'
+          rm .github/workflows/vendor-terminal-permission-screenshots.yml
+          git add .github/workflows/vendor-terminal-permission-screenshots.yml
+          git commit -m 'Remove temporary screenshot workflow'
+          git push origin HEAD:docs/terminal-permission-setup
