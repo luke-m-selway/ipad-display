@@ -13,17 +13,17 @@ Connect the iPad to the Mac with a USB data cable. If either device asks whether
 
 ## 2. Enable Internet Sharing to the iPad USB link
 
-On the Mac, open **System Settings → General → Sharing**, then open the details for **Internet Sharing**.
+On the Mac, open **System Settings → General → Sharing**.
 
-Set:
+<img src="assets/setup/sharing-ventura.webp" alt="macOS Ventura Sharing settings with Internet Sharing enabled" width="420">
+
+Open the details for **Internet Sharing**, then set:
 
 - **Share your connection from:** `Wi-Fi`
-- **To devices using:** turn on `iPad USB` (some systems may label the device `iPhone USB`)
+- **To computers using:** turn on `iPad USB` (some systems may label the device `iPhone USB`)
 - turn **Internet Sharing** on, then click **Done**
 
-<img src="assets/setup/internet-sharing-ventura.jpeg" alt="macOS Ventura Internet Sharing settings" width="720">
-
-Screenshot source: [AbleSet — Connecting to AbleSet From Other Devices](https://beta.ableset.com/docs/network).
+<img src="assets/setup/internet-sharing-ventura.webp" alt="macOS Ventura Internet Sharing details with Wi-Fi shared to iPad USB" width="420">
 
 Confirm the private USB network is present:
 
@@ -41,13 +41,11 @@ Run the display once so macOS registers a Screen Recording request:
 ipad
 ```
 
-Then open **System Settings → Privacy & Security → Screen Recording**. For the normal Terminal-launched install, macOS may attribute the request to **Terminal** rather than showing an `iPad Display` or Electron entry. Enable **Terminal** when that is the requester shown. If you launch the project from iTerm2, another terminal, or an IDE instead, enable the application macOS lists for that launch path.
+Then open **System Settings → Privacy & Security → Screen Recording**. For the normal Terminal-launched install, enable **Terminal**. If you launch the project from iTerm2, another terminal, or an IDE instead, enable the application macOS lists for that launch path.
 
-Do not wait for a specifically named `iPad Display` entry if macOS has already listed Terminal. After changing the permission, quit/restart the requesting application if macOS asks, then start `ipad` again.
+Do not wait for a specifically named `iPad Display`, Electron, DeskPad, Deskreen CE, or `MacUsbDisplay` entry if macOS attributes the request to Terminal. After changing the permission, quit/restart the requesting application if macOS asks, then start `ipad` again.
 
-<img src="assets/setup/screen-recording-ventura.png" alt="macOS Screen Recording settings showing Terminal in the permitted-app list" width="720">
-
-Screenshot source: [CNBlogs — macOS Screen Recording settings example](https://www.cnblogs.com/ZJT7098/p/17695865.html).
+<img src="assets/setup/screen-recording-ventura.webp" alt="macOS Ventura Screen Recording settings with Terminal enabled" width="420">
 
 ## 4. Open the viewer on the iPad
 
@@ -77,15 +75,17 @@ Start touch mode once:
 ipad touch
 ```
 
-Open **System Settings → Privacy & Security → Accessibility**. As with Screen Recording, a helper launched from the command line can be attributed to the terminal application that launched it. For the normal Terminal workflow, enable **Terminal** when that is the entry macOS presents. If macOS instead lists the helper itself or another terminal/IDE you used to launch it, enable that listed requester.
+Open **System Settings → Privacy & Security → Accessibility**. For the normal Terminal workflow, enable **Terminal**. If macOS instead lists another terminal or IDE you used to launch it, enable that listed requester.
 
 Restart `ipad touch` if macOS asks you to restart the requesting process after granting permission.
 
-<img src="assets/setup/accessibility-ventura.png" alt="macOS Accessibility settings showing Terminal in the permitted-app list" width="720">
+<img src="assets/setup/accessibility-ventura.webp" alt="macOS Ventura Accessibility settings with Terminal enabled" width="520">
 
-Screenshot source: [Stack Overflow — Terminal Accessibility example](https://stackoverflow.com/questions/53103394/robot-mousemove-does-not-work-at-all-in-mac-os-x).
+Three-finger Mission Control or Spaces gestures may also trigger an **Automation** permission request. If that happens, open **System Settings → Privacy & Security → Automation** and expand **Terminal**. Approve the application macOS actually asks Terminal to control.
 
-The first three-finger Mission Control or Spaces gesture may also make macOS ask whether the requester may control **System Events**. Approve that Automation request if it appears.
+The Automation list is populated from previous permission requests, so do not look for a fixed `System Events` entry. The screenshot below shows where Terminal appears; the child entries on another Mac can differ.
+
+<img src="assets/setup/automation-ventura.webp" alt="macOS Ventura Automation settings showing Terminal" width="520">
 
 ## 6. Final checks
 
