@@ -4,12 +4,18 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const script = readFileSync('scripts/ipad', 'utf8');
+const bootstrapScript = readFileSync('scripts/bootstrap', 'utf8');
 const installScript = readFileSync('scripts/install', 'utf8');
 const doctorScript = readFileSync('scripts/ipad-doctor', 'utf8');
 const readme = readFileSync('README.md', 'utf8');
 
 test('iPad shell entrypoints are valid bash', () => {
-	for (const path of ['scripts/ipad', 'scripts/install', 'scripts/ipad-doctor']) {
+	for (const path of [
+		'scripts/bootstrap',
+		'scripts/ipad',
+		'scripts/install',
+		'scripts/ipad-doctor',
+	]) {
 		assert.doesNotThrow(() => {
 			execFileSync('bash', ['-n', path]);
 		});
@@ -113,6 +119,17 @@ test('installer isolates npm cache from ambient user npm state', () => {
 	assert.match(installScript, /export npm_config_cache="\$NPM_CACHE"/);
 });
 
+test('fresh bootstrap owns checkout setup without requiring Homebrew', () => {
+	assert.match(bootstrapScript, /xcode-select --install/);
+	assert.match(
+		bootstrapScript,
+		/git clone --branch main --single-branch "\$REPO_URL" "\$REPO_DIR"/,
+	);
+	assert.match(bootstrapScript, /Homebrew is not required/);
+	assert.doesNotMatch(bootstrapScript, /brew (install|update)|\/opt\/homebrew/);
+	assert.match(bootstrapScript, /exec "\$REPO_DIR\/scripts\/install" "\$@"/);
+});
+
 test('README command reference matches the unified script contract', () => {
 	for (const command of [
 		'ipad',
@@ -125,4 +142,6 @@ test('README command reference matches the unified script contract', () => {
 		assert.match(readme, new RegExp(`\\\`${command}\\\``));
 	}
 	assert.match(readme, /Plain `ipad` remains[\s\S]*never starts the native input helper/);
+	assert.match(readme, /does \*\*not\*\* need Homebrew, Node, npm, or Git preinstalled/);
+	assert.match(readme, /scripts\/bootstrap/);
 });
