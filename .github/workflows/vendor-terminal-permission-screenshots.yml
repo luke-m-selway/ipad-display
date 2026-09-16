@@ -18,9 +18,13 @@ jobs:
       - name: Replace permission screenshots with Terminal examples
         run: |
           curl --fail --location --silent --show-error \
+            --user-agent 'Mozilla/5.0' \
+            --referer 'https://www.cnblogs.com/ZJT7098/p/17695865.html' \
             'https://img2023.cnblogs.com/blog/469540/202309/469540-20230912122930197-633129225.png' \
             -o docs/assets/setup/screen-recording-ventura.png
           curl --fail --location --silent --show-error \
+            --user-agent 'Mozilla/5.0' \
+            --referer 'https://stackoverflow.com/questions/53103394/robot-mousemove-does-not-work-at-all-in-mac-os-x' \
             'https://i.sstatic.net/ypgUB.png' \
             -o docs/assets/setup/accessibility-ventura.png
           test -s docs/assets/setup/screen-recording-ventura.png
