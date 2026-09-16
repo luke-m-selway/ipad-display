@@ -21,7 +21,9 @@ Set:
 - **To devices using:** turn on `iPad USB` (some systems may label the device `iPhone USB`)
 - turn **Internet Sharing** on, then click **Done**
 
-[<img src="https://beta.ableset.com/images/docs/07-network/sharing-ventura.jpeg" alt="macOS Ventura Internet Sharing settings" width="720">](https://beta.ableset.com/docs/network)
+<img src="assets/setup/internet-sharing-ventura.jpeg" alt="macOS Ventura Internet Sharing settings" width="720">
+
+Screenshot source: [AbleSet — Connecting to AbleSet From Other Devices](https://beta.ableset.com/docs/network).
 
 Confirm the private USB network is present:
 
@@ -41,7 +43,9 @@ ipad
 
 Then open **System Settings → Privacy & Security → Screen Recording** and enable the entry macOS added for the iPad Display/Electron capture process. If macOS asks you to quit or restart the process, do so, then start `ipad` again.
 
-[<img src="https://help.coviu.com/hubfs/Screenshot%202023-03-27%20at%204-58-47%20pm-png-1.png" alt="macOS Ventura Screen Recording privacy settings" width="720">](https://help.coviu.com/knowledge/enabling-screen-recording/sharing-for-mac-os-ventura)
+<img src="assets/setup/screen-recording-ventura.png" alt="macOS Ventura Screen Recording privacy settings" width="720">
+
+Screenshot source: [Coviu — Enabling Screen Recording/Sharing for macOS Ventura](https://help.coviu.com/knowledge/enabling-screen-recording/sharing-for-mac-os-ventura).
 
 ## 4. Open the viewer on the iPad
 
@@ -53,7 +57,9 @@ http://192.168.2.1:3131/
 
 For the normal full-screen workflow, tap Safari's **Share** button, choose **Add to Home Screen**, add it, then launch the saved Home Screen viewer.
 
-[<img src="https://cdn.checkie.org/logos/ipad_setup1.webp" alt="iPad Safari Add to Home Screen action" width="620">](https://checkie.org/)
+<img src="assets/setup/ipad-add-to-home-screen.webp" alt="iPad Safari Add to Home Screen action" width="620">
+
+Screenshot source: [Checkie](https://checkie.org/).
 
 When display-only mode is working, stop it before testing touch:
 
@@ -71,7 +77,9 @@ ipad touch
 
 Open **System Settings → Privacy & Security → Accessibility** and enable the entry macOS adds for the iPad touch helper. Restart `ipad touch` if macOS asks you to restart the process after granting permission.
 
-[<img src="https://dw1.s81c.com/IMWUC/MessageImages/445cbb9452184c8694081f52e8d1cc99.png" alt="macOS Ventura Accessibility privacy settings" width="720">](https://community.ibm.com/community/user/blogs/unnati-swami/2023/06/06/mac-testing-made-easy)
+<img src="assets/setup/accessibility-ventura.png" alt="macOS Ventura Accessibility privacy settings" width="720">
+
+Screenshot source: [IBM Community — Mac testing made easy](https://community.ibm.com/community/user/blogs/unnati-swami/2023/06/06/mac-testing-made-easy).
 
 The first three-finger Mission Control or Spaces gesture may also make macOS ask whether the helper may control **System Events**. Approve that Automation request if it appears.
 
